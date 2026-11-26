@@ -36,6 +36,10 @@ export const EDUCATION: EducationItem[] = [
       en: 'Department of Computer Science and Information Engineering',
     },
     period: '2021/08 – 2023/08',
+    note: {
+      zh: '研究方向：AMBTC 壓縮碼影像隱寫與資料隱藏，並探索深度學習（CNN / U-Net）於影像處理之應用',
+      en: 'Research: Image Steganography & Data Hiding on AMBTC Compression Codes, with Deep Learning (CNN / U-Net) exploration for image processing',
+    },
   },
   {
     id: 'ncut-bs',
@@ -52,6 +56,10 @@ export const EDUCATION: EducationItem[] = [
       en: 'Department of Computer Science and Information Engineering',
     },
     period: '2017/08 – 2021/07',
+    note: {
+      zh: '專題與實作方向：Android 行動應用程式開發與 SQL 關聯式資料庫設計',
+      en: 'Focus: Android Mobile Application Development and SQL Relational Database Systems',
+    },
   },
 ];
 
