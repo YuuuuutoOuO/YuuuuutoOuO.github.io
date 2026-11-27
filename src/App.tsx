@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
@@ -12,6 +12,7 @@ import { Footer } from './components/Footer';
 import { Mascot } from './components/Mascot';
 import { MiniTerminal } from './components/MiniTerminal';
 import { PelicanRampage } from './components/PelicanRampage';
+import { SystemPowerOverlay, type SystemPowerMode } from './components/SystemPowerOverlay';
 import { LabDock } from './components/LabDock';
 import { StegoLabModal, type LabModule } from './components/StegoLabModal';
 import { ComplianceLabModal } from './components/ComplianceLabModal';
@@ -20,6 +21,8 @@ import { KvCacheLabModal } from './components/KvCacheLabModal';
 export const App: React.FC = () => {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [rampageActive, setRampageActive] = useState(false);
+  const [powerMode, setPowerMode] = useState<SystemPowerMode>('running');
+  const [rebootNonce, setRebootNonce] = useState(0);
   const [stegoOpen, setStegoOpen] = useState(false);
   const [complianceOpen, setComplianceOpen] = useState(false);
   const [kvCacheOpen, setKvCacheOpen] = useState(false);
@@ -31,6 +34,16 @@ export const App: React.FC = () => {
     setLabModule(module);
     setStegoOpen(true);
   };
+
+  const handlePowerOn = useCallback((reason: 'shutdown' | 'reboot') => {
+    setHeroOverrides({});
+    setScratchpadText(null);
+    setPowerMode('running');
+    setRebootNonce((n) => n + 1);
+    if (reason === 'shutdown') {
+      setTerminalOpen(false);
+    }
+  }, []);
 
   return (
     <ThemeProvider>
@@ -67,6 +80,9 @@ export const App: React.FC = () => {
             onOpen={() => setTerminalOpen(true)}
             onClose={() => setTerminalOpen(false)}
             onTriggerRampage={() => setRampageActive(true)}
+            onTriggerShutdown={() => setPowerMode('shutdown')}
+            onTriggerReboot={() => setPowerMode('reboot')}
+            rebootNonce={rebootNonce}
             onOpenStegoLab={() => openLab('stego')}
             onApplyHeroOverrides={(next) => setHeroOverrides(next)}
             onResetHeroOverrides={() => setHeroOverrides({})}
@@ -89,6 +105,7 @@ export const App: React.FC = () => {
             active={rampageActive}
             onFinish={() => setRampageActive(false)}
           />
+          <SystemPowerOverlay mode={powerMode} onPowerOn={handlePowerOn} />
         </div>
       </LanguageProvider>
     </ThemeProvider>

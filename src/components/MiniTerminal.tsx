@@ -18,6 +18,9 @@ interface MiniTerminalProps {
   onClose: () => void;
   onOpen: () => void;
   onTriggerRampage: () => void;
+  onTriggerShutdown: () => void;
+  onTriggerReboot: () => void;
+  rebootNonce: number;
   onOpenStegoLab: () => void;
   onApplyHeroOverrides: (overrides: HeroVimOverrides) => void;
   onResetHeroOverrides: () => void;
@@ -68,6 +71,9 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
   onClose,
   onOpen,
   onTriggerRampage,
+  onTriggerShutdown,
+  onTriggerReboot,
+  rebootNonce,
   onOpenStegoLab,
   onApplyHeroOverrides,
   onResetHeroOverrides,
@@ -76,7 +82,7 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
   const { lang, toggleLang } = useLanguage();
   const { theme, setTheme, toggleTheme } = useTheme();
 
-  const [bootTimeMs] = useState(() => Date.now());
+  const [bootTimeMs, setBootTimeMs] = useState(() => Date.now());
   const [cwd, setCwd] = useState<string>(getHomeDir);
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -179,6 +185,22 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [open, minimized, vimSession, onClose, onOpen]);
 
+  // Reset virtual state when system reboots or powers back on
+  useEffect(() => {
+    if (rebootNonce <= 0) return;
+    setBootTimeMs(Date.now());
+    setCwd(getHomeDir());
+    setVfsOverrides({});
+    setVimSession(null);
+    setLines([
+      {
+        id: `reboot-${Date.now()}`,
+        text: '[REBOOT] ChuOS MiniKernel v1.0.0-agent booted cleanly. Sandbox overrides reset.',
+        tone: 'success',
+      },
+    ]);
+  }, [rebootNonce]);
+
   // Kernel panic auto-reboot countdown
   useEffect(() => {
     if (panicCountdown === null) return;
@@ -274,6 +296,56 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
       onApplyHeroOverrides(parsed);
     }
     return updatedCount;
+  };
+
+  const writeVfsFile = (
+    absPath: string,
+    nextContent: string,
+  ): { ok: boolean; message: string; sectionId?: string } => {
+    setVfsOverrides((prev) => ({ ...prev, [absPath]: nextContent }));
+
+    if (absPath === SITE_CONF_PATH) {
+      const changed = applySiteConfToDom(nextContent);
+      if (changed > 0) {
+        setMaximized(false);
+        scrollToSection('about');
+      }
+      return {
+        ok: true,
+        sectionId: 'about',
+        message:
+          lang === 'zh'
+            ? `已套用 ${changed} 項首頁欄位（僅限本機瀏覽器預覽，如同 F12，重整即還原）`
+            : `Applied ${changed} live Hero field(s) (local browser preview only, like F12; resets on reload)`,
+      };
+    }
+
+    if (absPath === SCRATCHPAD_PATH) {
+      const nonCommentLines = nextContent
+        .split('\n')
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n')
+        .trim();
+      onUpdateScratchpad(nonCommentLines || nextContent.trim());
+      setMaximized(false);
+      setTimeout(() => scrollToSection('scratchpad-wall'), 40);
+      return {
+        ok: true,
+        sectionId: 'scratchpad-wall',
+        message:
+          lang === 'zh'
+            ? '🕵️ 已將 ~/.scratchpad (0666) 內容即時同步到頁尾彩蛋塗鴉區！（僅本機預覽，重整即還原）'
+            : '🕵️ Synced ~/.scratchpad (0666) to the live Footer easter-egg wall! (Local only; resets on reload)',
+      };
+    }
+
+    return {
+      ok: true,
+      message:
+        lang === 'zh'
+          ? `已寫入記憶體 VFS：${formatDisplayPath(absPath)}（若要即時改首頁畫面請編輯 ~/site.conf）`
+          : `Wrote in-memory VFS: ${formatDisplayPath(absPath)} (edit ~/site.conf for live Hero DOM)`,
+    };
   };
 
   const resetSiteConfDom = () => {
@@ -395,38 +467,8 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
       }
 
       const nextContent = vimSession.content;
-      setVfsOverrides((prev) => ({ ...prev, [vimSession.absPath]: nextContent }));
-
-      let domSummary = '';
-      if (vimSession.absPath === SITE_CONF_PATH) {
-        const changed = applySiteConfToDom(nextContent);
-        domSummary =
-          lang === 'zh'
-            ? `已套用 ${changed} 項首頁欄位（僅限本機瀏覽器預覽，如同 F12，重整即還原）`
-            : `Applied ${changed} live Hero field(s) (local browser preview only, like F12; resets on reload)`;
-        if (changed > 0) {
-          setMaximized(false);
-          scrollToSection('about');
-        }
-      } else if (vimSession.absPath === SCRATCHPAD_PATH) {
-        const nonCommentLines = nextContent
-          .split('\n')
-          .filter((l) => !l.trim().startsWith('#'))
-          .join('\n')
-          .trim();
-        onUpdateScratchpad(nonCommentLines || nextContent.trim());
-        domSummary =
-          lang === 'zh'
-            ? '🕵️ 已將 ~/.scratchpad (0666) 內容即時同步到頁尾彩蛋塗鴉區！（僅本機預覽，重整即還原）'
-            : '🕵️ Synced ~/.scratchpad (0666) to the live Footer easter-egg wall! (Local only; resets on reload)';
-        setMaximized(false);
-        setTimeout(() => scrollToSection('scratchpad-wall'), 40);
-      } else {
-        domSummary =
-          lang === 'zh'
-            ? `[vim] 已寫入記憶體 VFS：${formatDisplayPath(vimSession.absPath)}（若要即時改首頁畫面請執行 vim ~/site.conf）`
-            : `[vim] Wrote in-memory VFS: ${formatDisplayPath(vimSession.absPath)} (run "vim ~/site.conf" to edit live Hero DOM)`;
-      }
+      const writeResult = writeVfsFile(vimSession.absPath, nextContent);
+      const domSummary = writeResult.message;
 
       if (cmd === 'w' || cmd === 'w!') {
         setVimSession((prev) =>
@@ -498,6 +540,7 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
       lang,
       theme,
       bootTimeMs,
+      history,
       setCwd,
       setTheme,
       toggleTheme,
@@ -507,11 +550,15 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
         onClose();
         onTriggerRampage();
       },
+      triggerShutdown: onTriggerShutdown,
+      triggerReboot: onTriggerReboot,
       openStegoLab: () => {
         onClose();
         onOpenStegoLab();
       },
       openVim: openVimEditor,
+      writeVfsFile,
+      clearHistory: () => setHistory([]),
       closeTerminal: onClose,
     });
 

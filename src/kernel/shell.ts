@@ -1,6 +1,6 @@
 import { PROJECTS } from '../data/projects';
 import { PUBLICATIONS } from '../data/publications';
-import { SITE_PROFILE } from '../data/profile';
+import { NAV_ITEMS, SITE_PROFILE } from '../data/profile';
 import type { Language } from '../types/portfolio';
 import type { ThemeMode } from '../context/ThemeContext';
 import {
@@ -37,14 +37,19 @@ export interface ShellContext {
   lang: Language;
   theme: ThemeMode;
   bootTimeMs: number;
+  history: string[];
   setCwd: (path: string) => void;
   setTheme: (mode: ThemeMode) => void;
   toggleTheme: () => void;
   toggleLang: () => void;
   scrollToSection: (sectionId: string) => void;
   triggerPanic: () => void;
+  triggerShutdown: () => void;
+  triggerReboot: () => void;
   openStegoLab: () => void;
   openVim: (absPath: string, node: VfsNode) => void;
+  writeVfsFile: (absPath: string, content: string) => { ok: boolean; message: string; sectionId?: string };
+  clearHistory: () => void;
   closeTerminal: () => void;
 }
 
@@ -53,10 +58,11 @@ export interface ShellResult {
   clear?: boolean;
 }
 
-const VALID_SECTIONS = ['about', 'publications', 'sherry', 'projects', 'experience', 'credentials'] as const;
+const VALID_SECTIONS = NAV_ITEMS.map((item) => item.id);
 
 export const AVAILABLE_COMMANDS = [
   'help',
+  'man',
   'ls',
   'll',
   'cd',
@@ -71,7 +77,17 @@ export const AVAILABLE_COMMANDS = [
   'tail',
   'sort',
   'uniq',
+  'cut',
+  'tr',
+  'nl',
+  'rev',
   'chmod',
+  'chown',
+  'touch',
+  'mkdir',
+  'cp',
+  'mv',
+  'rm',
   'tree',
   'grep',
   'search',
@@ -83,18 +99,102 @@ export const AVAILABLE_COMMANDS = [
   'stego',
   'neofetch',
   'uname',
+  'hostname',
   'whoami',
+  'who',
+  'w',
   'id',
   'ps',
+  'kill',
   'uptime',
   'dmesg',
+  'df',
+  'du',
+  'free',
+  'env',
+  'printenv',
+  'history',
+  'which',
+  'type',
   'date',
+  'cal',
   'echo',
+  'ping',
+  'ip',
+  'ifconfig',
+  'curl',
+  'systemctl',
+  'shutdown',
+  'poweroff',
+  'halt',
+  'reboot',
   'sudo',
-  'rm',
+  'su',
   'clear',
   'exit',
 ];
+
+const SHELL_BUILTINS = new Set(['cd', 'pwd', 'echo', 'exit', 'history', 'type', 'clear']);
+
+const MAN_PAGES: Record<string, string[]> = {
+  shutdown: [
+    'SHUTDOWN(8)               ChuOS System Manager Manual              SHUTDOWN(8)',
+    'NAME        shutdown, poweroff, halt — Halt or power-off ChuOS MiniKernel',
+    'SYNOPSIS    shutdown [-h|-r|-c] [now]',
+    'DESCRIPTION Gracefully stops portfolio services and enters System Halted state.',
+    '            Use -r to reboot and reset all in-memory Vim/sandbox overrides.',
+    'EXAMPLES    shutdown -h now | shutdown -r now | poweroff | reboot',
+  ],
+  reboot: [
+    'REBOOT(8)                 ChuOS System Manager Manual                REBOOT(8)',
+    'NAME        reboot — Restart ChuOS MiniKernel and restore clean DOM state',
+    'SYNOPSIS    reboot',
+    'DESCRIPTION Reboots the virtual portfolio kernel, resetting Vim overrides and CWD.',
+  ],
+  vim: [
+    'VIM(1)                    ChuOS Interactive Editor                      VIM(1)',
+    'NAME        vim, vi — In-terminal live DOM sandbox editor',
+    'SYNOPSIS    vim [file]',
+    'DESCRIPTION Opens a VFS file. Writable files (~/site.conf, ~/.scratchpad) sync',
+    '            live to the page (local-only preview, resets on reload).',
+    'KEYS        i (INSERT), Esc (NORMAL), :w, :wq, :q!, :reset',
+  ],
+  ls: [
+    'LS(1)                     ChuOS User Commands                            LS(1)',
+    'NAME        ls, ll — list directory contents with POSIX permissions',
+    'SYNOPSIS    ls [-l] [-a] [-h] [path]',
+    'EXAMPLES    ls -la | ls -lh publications | ls -la | wc -l',
+  ],
+  grep: [
+    'GREP(1)                   ChuOS User Commands                          GREP(1)',
+    'NAME        grep — search VFS files or filter piped stdin',
+    'SYNOPSIS    grep <keyword>   |   cmd | grep [-i|-v|-c|-n] <pattern>',
+    'EXAMPLES    grep Trivy | cat site.conf | grep -v "#"',
+  ],
+  kill: [
+    'KILL(1)                   ChuOS User Commands                          KILL(1)',
+    'NAME        kill — send a signal to a ChuOS process',
+    'SYNOPSIS    kill [-9|-15] <pid>',
+    'DESCRIPTION Run "ps" first to inspect PIDs (1, 42, 108, 256).',
+  ],
+  systemctl: [
+    'SYSTEMCTL(1)              ChuOS Service Manager                   SYSTEMCTL(1)',
+    'NAME        systemctl — inspect ChuOS units or control power state',
+    'SYNOPSIS    systemctl [list-units | status <unit> | poweroff | reboot]',
+  ],
+  cut: [
+    'CUT(1)                    ChuOS User Commands                           CUT(1)',
+    'NAME        cut — extract columns from lines or piped stdin',
+    'SYNOPSIS    cut -d <delim> -f <list> [file]',
+    'EXAMPLES    cat site.conf | grep -v "#" | cut -d = -f 1',
+  ],
+  tr: [
+    'TR(1)                     ChuOS User Commands                            TR(1)',
+    'NAME        tr — translate or delete characters from piped stdin',
+    'SYNOPSIS    ... | tr [-d] <set1> [set2]',
+    'EXAMPLES    echo "chuos" | tr a-z A-Z',
+  ],
+};
 
 let lineCounter = 0;
 function makeLine(
@@ -144,29 +244,183 @@ function getUtf8ByteLength(text: string): number {
   return text.length;
 }
 
+interface RedirectionSpec {
+  mode: 'overwrite' | 'append';
+  target: string;
+}
+
+function extractRedirection(stage: string): {
+  cmdPart: string;
+  redirect?: RedirectionSpec;
+  syntaxError?: string;
+} {
+  let quote: '"' | "'" | null = null;
+  let opIndex = -1;
+  let opLen = 0;
+
+  for (let i = 0; i < stage.length; i += 1) {
+    const ch = stage[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '>') {
+      opIndex = i;
+      opLen = stage[i + 1] === '>' ? 2 : 1;
+      break;
+    }
+  }
+
+  if (opIndex === -1) return { cmdPart: stage };
+  const cmdPart = stage.slice(0, opIndex).trim();
+  const targetRaw = stage.slice(opIndex + opLen).trim();
+  if (!targetRaw) {
+    return { cmdPart, syntaxError: "chu-sh: syntax error near unexpected token `newline'" };
+  }
+  const target = targetRaw.split(/\s+/)[0]?.replace(/^["']|["']$/g, '') ?? '';
+  return {
+    cmdPart,
+    redirect: { mode: opLen === 2 ? 'append' : 'overwrite', target },
+  };
+}
+
+function computeRecursiveBytes(node: VfsNode): number {
+  if (node.type === 'file') return getNodeByteSize(node);
+  let total = 4096;
+  for (const child of Object.values(node.children ?? {})) {
+    total += computeRecursiveBytes(child);
+  }
+  return total;
+}
+
+function expandCharSet(spec: string): string {
+  if (spec === '[:lower:]') return 'abcdefghijklmnopqrstuvwxyz';
+  if (spec === '[:upper:]') return 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  if (spec === '[:digit:]') return '0123456789';
+  let out = '';
+  for (let i = 0; i < spec.length; i += 1) {
+    if (i + 2 < spec.length && spec[i + 1] === '-') {
+      const start = spec.charCodeAt(i);
+      const end = spec.charCodeAt(i + 2);
+      if (start <= end) {
+        for (let c = start; c <= end; c += 1) out += String.fromCharCode(c);
+        i += 2;
+        continue;
+      }
+    }
+    out += spec[i];
+  }
+  return out;
+}
+
+function buildCalendarLines(): TerminalLine[] {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const today = now.getDate();
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  const title = `${monthNames[month]} ${year}`;
+  const padLeft = Math.max(0, Math.floor((20 - title.length) / 2));
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const out: TerminalLine[] = [
+    makeLine(`${' '.repeat(padLeft)}${title}`, 'accent'),
+    makeLine('Su Mo Tu We Th Fr Sa', 'muted'),
+  ];
+
+  let row = '   '.repeat(firstDay);
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const cell = day === today ? `[${String(day).padStart(2, ' ')}]` : `${String(day).padStart(2, ' ')} `;
+    row += day === today ? cell.slice(0, 3) : cell;
+    if ((firstDay + day) % 7 === 0 || day === daysInMonth) {
+      out.push(makeLine(row.trimEnd(), day >= today && day - 6 <= today && row.includes('[') ? 'success' : 'normal'));
+      row = '';
+    }
+  }
+  out.push(makeLine(`Today: ${year}-${String(month + 1).padStart(2, '0')}-${String(today).padStart(2, '0')}`, 'muted'));
+  return out;
+}
+
 export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult {
   const trimmed = rawInput.trim();
   if (!trimmed) return { lines: [] };
 
   const stages = splitPipeline(trimmed);
-  if (stages.length > 1) {
-    if (stages.some((s) => !s)) {
-      return { lines: [makeLine('chu-sh: syntax error near unexpected token `|`', 'error')] };
-    }
-    let currentResult: ShellResult = { lines: [] };
-    let stdinLines: string[] | undefined = undefined;
-    for (const stage of stages) {
-      currentResult = executeSingleCommand(stage, ctx, stdinLines);
-      if (currentResult.clear) return currentResult;
-      if (currentResult.lines.length > 0 && currentResult.lines.every((l) => l.tone === 'error')) {
-        return currentResult;
-      }
-      stdinLines = currentResult.lines.map((l) => l.text);
-    }
-    return currentResult;
+  if (stages.some((s) => !s)) {
+    return { lines: [makeLine('chu-sh: syntax error near unexpected token `|`', 'error')] };
   }
 
-  return executeSingleCommand(trimmed, ctx, undefined);
+  // Parse optional > or >> redirection on the final stage
+  const lastIdx = stages.length - 1;
+  const parsedLast = extractRedirection(stages[lastIdx]);
+  if (parsedLast.syntaxError) {
+    return { lines: [makeLine(parsedLast.syntaxError, 'error')] };
+  }
+  if (!parsedLast.cmdPart) {
+    return { lines: [makeLine('chu-sh: syntax error: missing command before redirection', 'error')] };
+  }
+  stages[lastIdx] = parsedLast.cmdPart;
+
+  let currentResult: ShellResult = { lines: [] };
+  let stdinLines: string[] | undefined = undefined;
+  for (const stage of stages) {
+    currentResult = executeSingleCommand(stage, ctx, stdinLines);
+    if (currentResult.clear) return currentResult;
+    if (currentResult.lines.length > 0 && currentResult.lines.every((l) => l.tone === 'error')) {
+      return currentResult;
+    }
+    stdinLines = currentResult.lines.map((l) => l.text);
+  }
+
+  if (parsedLast.redirect) {
+    const { mode, target } = parsedLast.redirect;
+    const absPath = normalizePath(ctx.cwd, target);
+    const node = resolveNode(ctx.root, absPath);
+    if (!node) {
+      return {
+        lines: [
+          makeLine(`chu-sh: ${target}: Read-only file system (cannot create new files in portfoliofs)`, 'error'),
+        ],
+      };
+    }
+    if (node.type === 'dir') {
+      return { lines: [makeLine(`chu-sh: ${target}: Is a directory`, 'error')] };
+    }
+    if (node.readonly) {
+      return {
+        lines: [
+          makeLine(
+            `chu-sh: ${target}: Permission denied (owner=${node.owner ?? 'root'}, mode=${formatOctalMode(node)})`,
+            'error',
+          ),
+        ],
+      };
+    }
+
+    const payload = currentResult.lines.map((l) => l.text).join('\n');
+    const nextContent =
+      mode === 'append' ? (node.content ? `${node.content}\n${payload}` : payload) : payload;
+    const writeRes = ctx.writeVfsFile(absPath, nextContent);
+    return {
+      lines: [
+        makeLine(
+          writeRes.message,
+          writeRes.ok ? 'success' : 'error',
+          writeRes.sectionId ? { label: `goto #${writeRes.sectionId}`, sectionId: writeRes.sectionId } : undefined,
+        ),
+      ],
+    };
+  }
+
+  return currentResult;
 }
 
 function executeSingleCommand(
@@ -193,15 +447,481 @@ function executeSingleCommand(
           makeLine('ChuOS MiniKernel Shell — Available Commands', 'accent'),
           makeLine('  Files      : ls [-la|-lh], ll, cd <dir>, pwd, cat <file>, tree [dir]'),
           makeLine('  Editor     : vim [file]  (fun local-only DOM sandbox; resets on reload)'),
-          makeLine('  Pipe/Text  : cmd1 | cmd2  (supports grep [-v|-c|-n], wc [-l|-w|-c], head, tail, sort, uniq)'),
-          makeLine('  Inspect    : stat <path>, file <path>, chmod <mode> <file>'),
-          makeLine('  Search     : grep <keyword>, search <keyword>, goto <section|file>'),
-          makeLine('  Controls   : theme [light|dark|toggle], lang [toggle], stego'),
-          makeLine('  System     : neofetch, uname -a, id, whoami, ps, uptime, dmesg, clear'),
-          makeLine('  Easter Egg : sudo hire-me, rm -rf /', 'warning'),
+          makeLine('  Pipe/Redir : cmd1 | cmd2, >, >>  (grep, wc, head, tail, sort, uniq, cut, tr, nl, rev)'),
+          makeLine('  Inspect    : stat, file, chmod, chown, du [-h|-s], df [-h], free [-h]'),
+          makeLine('  Search/Nav : grep <kw>, search <kw>, goto <section|file>, man <cmd>, which <cmd>'),
+          makeLine('  System     : neofetch, uname -a, hostname, env, history, whoami, who, id, ps, kill, uptime, dmesg, cal'),
+          makeLine('  Power/Svc  : shutdown [-h|-r] [now], poweroff, halt, reboot, systemctl [status|list-units]'),
+          makeLine('  Network    : ping <host>, ip a, ifconfig, curl [-I] <url>'),
+          makeLine('  Controls   : theme [light|dark|toggle], lang [toggle], stego, clear, exit'),
+          makeLine('  Easter Egg : sudo hire-me, rm -rf /, ls -la (find the 0666 file!)', 'warning'),
           makeLine('Tip: Press Tab to autocomplete, ↑/↓ for history, drag edges to resize.', 'muted'),
         ],
       };
+
+    case 'man': {
+      const topic = args[0]?.toLowerCase();
+      if (!topic) {
+        return { lines: [makeLine('What manual page do you want? Try: man shutdown, man vim, man grep', 'warning')] };
+      }
+      const page = MAN_PAGES[topic];
+      if (page) {
+        return {
+          lines: page.map((line, idx) => makeLine(line, idx === 0 ? 'accent' : 'normal')),
+        };
+      }
+      if (AVAILABLE_COMMANDS.includes(topic)) {
+        return {
+          lines: [
+            makeLine(`${topic.toUpperCase()}(1)              ChuOS User Commands`, 'accent'),
+            makeLine(`NAME        ${topic} — built-in ChuOS MiniKernel shell command`),
+            makeLine(`SYNOPSIS    ${topic} [options] [args...]`),
+            makeLine(`TIP         Run "${topic}" or "help" for usage details.`, 'muted'),
+          ],
+        };
+      }
+      return { lines: [makeLine(`No manual entry for ${topic}`, 'error')] };
+    }
+
+    case 'hostname': {
+      const hostNode = resolveNode(ctx.root, '/etc/hostname');
+      return { lines: [makeLine((hostNode?.content ?? 'chuos.local').trim())] };
+    }
+
+    case 'who':
+    case 'w':
+      return {
+        lines: [
+          makeLine(`USER     TTY      LOGIN@   IDLE   WHAT`, 'muted'),
+          makeLine(`guest    pts/0    ${formatUptime(ctx.bootTimeMs).padEnd(8, ' ')} 0.00s  /bin/chu-sh`),
+        ],
+      };
+
+    case 'cal':
+      return { lines: buildCalendarLines() };
+
+    case 'history': {
+      if (args.includes('-c')) {
+        ctx.clearHistory();
+        return { lines: [makeLine('Command history cleared.', 'muted')] };
+      }
+      if (ctx.history.length === 0) {
+        return { lines: [makeLine('(no command history yet)', 'muted')] };
+      }
+      const chronological = [...ctx.history].reverse();
+      return {
+        lines: chronological.map((entry, idx) =>
+          makeLine(`${String(idx + 1).padStart(4, ' ')}  ${entry}`),
+        ),
+      };
+    }
+
+    case 'env':
+    case 'printenv': {
+      const envMap: Record<string, string> = {
+        USER: 'guest',
+        HOME: getHomeDir(),
+        PWD: ctx.cwd,
+        SHELL: '/bin/chu-sh',
+        TERM: 'xterm-256color',
+        HOSTNAME: 'chuos.local',
+        LANG: ctx.lang === 'zh' ? 'zh_TW.UTF-8' : 'en_US.UTF-8',
+        CHUOS_THEME: ctx.theme,
+        PATH: '/usr/local/bin:/usr/bin:/bin',
+      };
+      if (args[0]) {
+        const key = args[0].toUpperCase();
+        if (key in envMap) return { lines: [makeLine(envMap[key])] };
+        return { lines: [] };
+      }
+      return {
+        lines: Object.entries(envMap).map(([k, v]) => makeLine(`${k}=${v}`)),
+      };
+    }
+
+    case 'which':
+    case 'type': {
+      if (!args[0]) {
+        return { lines: [makeLine(`usage: ${cmd} <command>`, 'warning')] };
+      }
+      const target = args[0].toLowerCase();
+      if (SHELL_BUILTINS.has(target)) {
+        return {
+          lines: [
+            makeLine(
+              cmd === 'type' ? `${target} is a shell builtin` : `${target}: shell built-in command`,
+              'accent',
+            ),
+          ],
+        };
+      }
+      if (AVAILABLE_COMMANDS.includes(target)) {
+        return {
+          lines: [
+            makeLine(
+              cmd === 'type' ? `${target} is /usr/bin/${target}` : `/usr/bin/${target}`,
+              'success',
+            ),
+          ],
+        };
+      }
+      return { lines: [makeLine(`${cmd}: ${target}: not found`, 'error')] };
+    }
+
+    case 'df': {
+      const human = args.includes('-h');
+      return {
+        lines: [
+          makeLine(
+            human
+              ? 'Filesystem      Size  Used Avail Use% Mounted on'
+              : 'Filesystem     1K-blocks  Used Available Use% Mounted on',
+            'muted',
+          ),
+          makeLine(
+            human
+              ? 'portfoliofs     128M   14M  114M  11% /home/guest (ro)'
+              : 'portfoliofs       131072 14336    116736  11% /home/guest',
+          ),
+          makeLine(
+            human
+              ? 'tmpfs            64M  128K   64M   1% /tmp (rw)'
+              : 'tmpfs              65536   128     65408   1% /tmp',
+          ),
+          makeLine(
+            human
+              ? 'proc               0     0     0    - /proc'
+              : 'proc                   0     0         0    - /proc',
+          ),
+        ],
+      };
+    }
+
+    case 'du': {
+      const human = args.includes('-h') || args.includes('-sh') || args.includes('-hs');
+      const summary = args.includes('-s') || args.includes('-sh') || args.includes('-hs');
+      const pathArg = args.find((a) => !a.startsWith('-'));
+      const target = pathArg ? normalizePath(ctx.cwd, pathArg) : ctx.cwd;
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`du: cannot access '${pathArg}': No such file or directory`, 'error')] };
+      }
+      const fmt = (bytes: number) =>
+        (human ? formatHumanSize(bytes) : String(Math.max(1, Math.ceil(bytes / 1024)))).padStart(6, ' ');
+
+      if (summary || node.type === 'file') {
+        const total = computeRecursiveBytes(node);
+        return { lines: [makeLine(`${fmt(total)}  ${formatDisplayPath(target)}`)] };
+      }
+      const out: TerminalLine[] = [];
+      for (const child of Object.values(node.children ?? {})) {
+        const childPath = `${target === '/' ? '' : target}/${child.name}`.replace('//', '/');
+        out.push(makeLine(`${fmt(computeRecursiveBytes(child))}  ${formatDisplayPath(childPath)}`));
+      }
+      out.push(makeLine(`${fmt(computeRecursiveBytes(node))}  ${formatDisplayPath(target)}`, 'accent'));
+      return { lines: out };
+    }
+
+    case 'free': {
+      const human = args.includes('-h');
+      return {
+        lines: [
+          makeLine('               total        used        free      shared  buff/cache   available', 'muted'),
+          makeLine(
+            human
+              ? 'Mem:           2.0Gi       248Mi       1.4Gi        12Mi       356Mi       1.7Gi'
+              : 'Mem:         2097152      253952     1474560       12288      368640     1794048',
+          ),
+          makeLine(
+            human
+              ? 'Swap:          512Mi          0B       512Mi'
+              : 'Swap:         524288           0      524288',
+          ),
+        ],
+      };
+    }
+
+    case 'cut': {
+      let delim = '\t';
+      let fieldSpec = '';
+      let fileArg: string | undefined;
+
+      for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i];
+        if (arg === '-d' && args[i + 1] !== undefined) {
+          delim = args[i + 1];
+          i += 1;
+        } else if (arg.startsWith('-d') && arg.length > 2) {
+          delim = arg.slice(2);
+        } else if (arg === '-f' && args[i + 1] !== undefined) {
+          fieldSpec = args[i + 1];
+          i += 1;
+        } else if (arg.startsWith('-f') && arg.length > 2) {
+          fieldSpec = arg.slice(2);
+        } else if (!arg.startsWith('-') && !fileArg) {
+          fileArg = arg;
+        }
+      }
+
+      if (!fieldSpec) {
+        return { lines: [makeLine('usage: cut -d <delim> -f <fields> [file]  (e.g. cut -d = -f 1)', 'warning')] };
+      }
+
+      let sourceLines: string[] = [];
+      if (fileArg) {
+        const node = resolveNode(ctx.root, normalizePath(ctx.cwd, fileArg));
+        if (!node) return { lines: [makeLine(`cut: ${fileArg}: No such file or directory`, 'error')] };
+        if (node.type === 'dir') return { lines: [makeLine(`cut: ${fileArg}: Is a directory`, 'error')] };
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = stdinLines;
+      } else {
+        return { lines: [makeLine('usage: cut -d <delim> -f <fields> <file>  (or pipe via | cut ...)', 'warning')] };
+      }
+
+      const indices: number[] = [];
+      for (const part of fieldSpec.split(',')) {
+        if (part.includes('-')) {
+          const [s, e] = part.split('-').map((n) => Number.parseInt(n, 10));
+          if (!Number.isNaN(s) && !Number.isNaN(e) && s >= 1 && e >= s) {
+            for (let k = s; k <= e; k += 1) indices.push(k - 1);
+          }
+        } else {
+          const idx = Number.parseInt(part, 10);
+          if (!Number.isNaN(idx) && idx >= 1) indices.push(idx - 1);
+        }
+      }
+
+      return {
+        lines: sourceLines.map((line) => {
+          const cols = line.split(delim);
+          if (cols.length === 1) return makeLine(line);
+          return makeLine(indices.map((idx) => cols[idx] ?? '').join(delim));
+        }),
+      };
+    }
+
+    case 'tr': {
+      if (stdinLines === undefined) {
+        return { lines: [makeLine('usage: ... | tr [-d] <set1> [set2]  (e.g. echo hi | tr a-z A-Z)', 'warning')] };
+      }
+      const delMode = args[0] === '-d';
+      const set1Raw = delMode ? args[1] : args[0];
+      const set2Raw = delMode ? '' : args[1];
+      if (!set1Raw || (!delMode && !set2Raw)) {
+        return { lines: [makeLine('usage: ... | tr [-d] <set1> [set2]', 'warning')] };
+      }
+      const set1 = expandCharSet(set1Raw);
+      const set2 = expandCharSet(set2Raw ?? '');
+      return {
+        lines: stdinLines.map((line) => {
+          let result = '';
+          for (const ch of line) {
+            const idx = set1.indexOf(ch);
+            if (idx >= 0) {
+              if (!delMode) result += set2[Math.min(idx, set2.length - 1)] ?? ch;
+            } else {
+              result += ch;
+            }
+          }
+          return makeLine(result);
+        }),
+      };
+    }
+
+    case 'nl': {
+      const fileArg = args.find((a) => !a.startsWith('-'));
+      let sourceLines: string[] = [];
+      if (fileArg) {
+        const node = resolveNode(ctx.root, normalizePath(ctx.cwd, fileArg));
+        if (!node) return { lines: [makeLine(`nl: ${fileArg}: No such file or directory`, 'error')] };
+        if (node.type === 'dir') return { lines: [makeLine(`nl: ${fileArg}: Is a directory`, 'error')] };
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = stdinLines;
+      } else {
+        return { lines: [makeLine('usage: nl <file>  (or pipe via | nl)', 'warning')] };
+      }
+      return {
+        lines: sourceLines.map((l, idx) => makeLine(`${String(idx + 1).padStart(4, ' ')}  ${l}`)),
+      };
+    }
+
+    case 'rev': {
+      const fileArg = args.find((a) => !a.startsWith('-'));
+      let sourceLines: string[] = [];
+      if (fileArg) {
+        const node = resolveNode(ctx.root, normalizePath(ctx.cwd, fileArg));
+        if (!node) return { lines: [makeLine(`rev: ${fileArg}: No such file or directory`, 'error')] };
+        if (node.type === 'dir') return { lines: [makeLine(`rev: ${fileArg}: Is a directory`, 'error')] };
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = stdinLines;
+      } else {
+        return { lines: [makeLine('usage: rev <file>  (or pipe via | rev)', 'warning')] };
+      }
+      return {
+        lines: sourceLines.map((l) => makeLine(Array.from(l).reverse().join(''))),
+      };
+    }
+
+    case 'touch':
+    case 'mkdir':
+    case 'cp':
+    case 'mv':
+    case 'chown': {
+      const label = args[0] ?? 'target';
+      return {
+        lines: [
+          makeLine(
+            `${cmd}: cannot modify '${label}': Read-only file system (portfoliofs, EROFS)`,
+            'error',
+          ),
+        ],
+      };
+    }
+
+    case 'su':
+      return {
+        lines: [
+          makeLine("su: Authentication failure (guest cannot escalate to root; try 'sudo hire-me')", 'error'),
+        ],
+      };
+
+    case 'kill': {
+      const pidArg = args.find((a) => !a.startsWith('-'));
+      if (!pidArg) {
+        return { lines: [makeLine('usage: kill [-9|-15] <pid>  (run "ps" to view PIDs)', 'warning')] };
+      }
+      if (pidArg === '1') {
+        return { lines: [makeLine('kill: (1) - Operation not permitted (cannot terminate /sbin/init)', 'error')] };
+      }
+      if (pidArg === '42') {
+        return {
+          lines: [
+            makeLine('[sherry-agentd] Nice try! Sherry politely ignored SIGTERM. :)', 'warning'),
+          ],
+        };
+      }
+      if (pidArg === '108') {
+        return {
+          lines: [makeLine('kill: (108) - Operation not permitted (selinux-gcb-auditor is protected)', 'error')],
+        };
+      }
+      if (pidArg === '256') {
+        ctx.closeTerminal();
+        return { lines: [makeLine('Terminated (/bin/chu-sh)', 'muted')] };
+      }
+      return { lines: [makeLine(`kill: (${pidArg}) - No such process`, 'error')] };
+    }
+
+    case 'shutdown': {
+      if (args.includes('-c')) {
+        return { lines: [makeLine('shutdown: No scheduled shutdown to cancel.', 'muted')] };
+      }
+      if (args.includes('-r') || args.includes('reboot')) {
+        ctx.triggerReboot();
+        return { lines: [makeLine('Broadcast message from guest@chuos: The system is going down for reboot NOW!', 'warning')] };
+      }
+      ctx.triggerShutdown();
+      return { lines: [makeLine('Broadcast message from guest@chuos: The system is going down for poweroff NOW!', 'warning')] };
+    }
+
+    case 'poweroff':
+    case 'halt':
+      ctx.triggerShutdown();
+      return { lines: [makeLine('Initiating ChuOS MiniKernel power-off...', 'warning')] };
+
+    case 'reboot':
+      ctx.triggerReboot();
+      return { lines: [makeLine('Initiating ChuOS MiniKernel reboot...', 'warning')] };
+
+    case 'systemctl': {
+      const sub = (args[0] ?? '').toLowerCase();
+      if (sub === 'poweroff' || sub === 'halt') {
+        ctx.triggerShutdown();
+        return { lines: [makeLine('Starting System Power Off...', 'warning')] };
+      }
+      if (sub === 'reboot') {
+        ctx.triggerReboot();
+        return { lines: [makeLine('Starting System Reboot...', 'warning')] };
+      }
+      if (sub === 'list-units' || !sub) {
+        return {
+          lines: [
+            makeLine('UNIT                          LOAD   ACTIVE SUB     DESCRIPTION', 'muted'),
+            makeLine('sherry-agentd.service         loaded active running Autonomous AI Companion Daemon', 'success'),
+            makeLine('selinux-gcb-auditor.service   loaded active running Linux GCB & Compliance Monitor', 'success'),
+            makeLine('portfoliofs-mount.service     loaded active exited  Read-only Portfolio VFS Mount', 'normal'),
+            makeLine('chu-sh@pts0.service           loaded active running Interactive Guest Shell', 'normal'),
+          ],
+        };
+      }
+      if (sub === 'status') {
+        const unit = args[1] ?? 'sherry-agentd.service';
+        return {
+          lines: [
+            makeLine(`● ${unit} — ChuOS Managed Service`, 'success'),
+            makeLine(`     Loaded: loaded (/etc/systemd/system/${unit}; enabled)`),
+            makeLine(`     Active: active (running) since boot (up ${formatUptime(ctx.bootTimeMs)})`, 'success'),
+            makeLine(`   Security: SELinux=enforcing, Nessus=0-crit, Trivy=0-CVE, Bandit=0-high`, 'muted'),
+          ],
+        };
+      }
+      return {
+        lines: [makeLine('usage: systemctl [list-units | status <unit> | poweroff | reboot]', 'warning')],
+      };
+    }
+
+    case 'ping': {
+      const host = args.find((a) => !a.startsWith('-')) ?? 'chuos.local';
+      const resolvedIp = host === 'localhost' || host === '127.0.0.1' || host === 'chuos.local' ? '127.0.0.1' : '10.0.42.1';
+      return {
+        lines: [
+          makeLine(`PING ${host} (${resolvedIp}) 56(84) bytes of data.`, 'accent'),
+          makeLine(`64 bytes from ${host} (${resolvedIp}): icmp_seq=1 ttl=64 time=0.42 ms`),
+          makeLine(`64 bytes from ${host} (${resolvedIp}): icmp_seq=2 ttl=64 time=0.38 ms`),
+          makeLine(`64 bytes from ${host} (${resolvedIp}): icmp_seq=3 ttl=64 time=0.41 ms`),
+          makeLine(`--- ${host} ping statistics ---`, 'muted'),
+          makeLine(`3 packets transmitted, 3 received, 0% packet loss, time 2004ms`, 'success'),
+        ],
+      };
+    }
+
+    case 'ip':
+    case 'ifconfig':
+      return {
+        lines: [
+          makeLine('1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN', 'accent'),
+          makeLine('    inet 127.0.0.1/8 scope host lo'),
+          makeLine('2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP', 'accent'),
+          makeLine('    link/ether 02:42:ac:11:00:42 brd ff:ff:ff:ff:ff:ff', 'muted'),
+          makeLine('    inet 10.0.42.10/24 brd 10.0.42.255 scope global eth0 (virtual sandbox)'),
+        ],
+      };
+
+    case 'curl': {
+      const headOnly = args.includes('-I') || args.includes('--head');
+      const url = args.find((a) => !a.startsWith('-'));
+      if (!url) {
+        return { lines: [makeLine('usage: curl [-I] <url>  (e.g. curl -I chuos.local)', 'warning')] };
+      }
+      const headerLines: TerminalLine[] = [
+        makeLine('HTTP/2 200 OK', 'success'),
+        makeLine('server: ChuOS-MiniKernel/1.0 (GitHub Pages)'),
+        makeLine('content-type: text/html; charset=utf-8'),
+        makeLine('x-security-audit: Nessus=0-crit; Trivy=0-CVE; Bandit=0-high; GCB=100%'),
+      ];
+      if (headOnly) return { lines: headerLines };
+      return {
+        lines: [
+          ...headerLines,
+          makeLine(''),
+          makeLine(`<!-- Simulated offline sandbox response for ${url} -->`, 'muted'),
+          makeLine(`<title>${SITE_PROFILE.name.en} — Portfolio</title>`),
+        ],
+      };
+    }
 
     case 'pwd':
       return { lines: [makeLine(ctx.cwd)] };
@@ -825,6 +1545,7 @@ function executeSingleCommand(
       };
 
     case 'sudo': {
+      const subCmd = args[0]?.toLowerCase() ?? '';
       if (args.join(' ').toLowerCase() === 'hire-me') {
         return {
           lines: [
@@ -838,6 +1559,14 @@ function executeSingleCommand(
             }),
           ],
         };
+      }
+      if (subCmd === 'shutdown' || subCmd === 'poweroff' || subCmd === 'halt' || subCmd === 'reboot') {
+        if (subCmd === 'reboot' || args.includes('-r')) {
+          ctx.triggerReboot();
+          return { lines: [makeLine('[sudo] Initiating ChuOS MiniKernel reboot...', 'warning')] };
+        }
+        ctx.triggerShutdown();
+        return { lines: [makeLine('[sudo] Initiating ChuOS MiniKernel power-off...', 'warning')] };
       }
       return {
         lines: [makeLine('guest is not in the sudoers file. This incident will be reported to Sherry.', 'error')],
