@@ -83,8 +83,12 @@ function hydrateVfsMetadata(
   if (typeof node.mode !== 'number') {
     node.mode = node.type === 'dir' ? 0o755 : node.readonly ? 0o444 : 0o644;
   }
-  if (!node.owner) node.owner = inSystemTree ? parentOwner : 'guest';
+  if (!node.owner) node.owner = inSystemTree ? parentOwner : 'root';
   if (!node.group) node.group = inSystemTree ? parentGroup : 'guest';
+  // Enforce POSIX semantics: guest (uid 1000) cannot write files owned by root under 0644
+  if (node.type === 'file' && node.owner !== 'guest' && (node.mode & 0o002) === 0) {
+    node.readonly = true;
+  }
 
   if (node.type === 'dir' && node.children) {
     for (const child of Object.values(node.children)) {
@@ -171,6 +175,30 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
         .join('\n'),
     };
   }
+
+  const siteConfContent = isZh
+    ? [
+        '# [趣味沙盒] ChuOS 即時網頁編輯檔（等同 F12 / DevTools 本機暫時預覽）',
+        '# 本功能純屬好玩！修改只會套用到你目前的瀏覽器畫面，不會更動真實網站，重整即還原。',
+        '# 操作提示：按 i 進入編輯模式 → Esc 回到指令模式 → 輸入 :wq 套用並離開（:q! 放棄、:reset 還原）',
+        '',
+        `NAME=${SITE_PROFILE.name.zh}`,
+        `HEADLINE=${SITE_PROFILE.headline.zh}`,
+        `AFFILIATION=${SITE_PROFILE.affiliation.zh}`,
+        `BIO=${SITE_PROFILE.bio.zh}`,
+        `NOTICE=${SITE_PROFILE.seekingNotice.zh}`,
+      ].join('\n')
+    : [
+        '# [FUN SANDBOX] ChuOS Live Page Config (Local Browser DOM Only — like DevTools/F12)',
+        '# Just for fun! Edits only affect your local browser view and vanish on page reload.',
+        '# Keys: press i to edit -> Esc -> :wq to apply & quit (:q! to discard, :reset to restore)',
+        '',
+        `NAME=${SITE_PROFILE.name.en}`,
+        `HEADLINE=${SITE_PROFILE.headline.en}`,
+        `AFFILIATION=${SITE_PROFILE.affiliation.en}`,
+        `BIO=${SITE_PROFILE.bio.en}`,
+        `NOTICE=${SITE_PROFILE.seekingNotice.en}`,
+      ].join('\n');
 
   const aboutContent = [
     `${SITE_PROFILE.name.zh} (${SITE_PROFILE.name.en})`,
@@ -287,6 +315,8 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
                 name: '.bashrc',
                 type: 'file',
                 mode: 0o644,
+                owner: 'guest',
+                group: 'guest',
                 content: [
                   '# ~/.bashrc: executed by chu-sh for interactive shells.',
                   'export PS1="guest@chuos:\\w$ "',
@@ -299,13 +329,40 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
                 name: '.profile',
                 type: 'file',
                 mode: 0o644,
+                owner: 'guest',
+                group: 'guest',
                 content: '# ~/.profile: ChuOS guest session environment\nPATH="/usr/local/bin:/usr/bin:/bin"\n',
+              },
+              '.scratchpad': {
+                name: '.scratchpad',
+                type: 'file',
+                mode: 0o666,
+                owner: 'root',
+                group: 'guest',
+                content: [
+                  '# [EASTER EGG · 0666] 恭喜你用 ls -la 揪出全站唯一一個 world-writable (0666) 檔案！',
+                  '# Nice catch! You found the only 0666 (-rw-rw-rw-) file in ChuOS.',
+                  '# 本檔案純屬資安彩蛋塗鴉牆，僅存於本機記憶體，重整即還原。',
+                  '# 歡迎輸入 vim ~/.scratchpad 留個言再 :wq 看看（想改首頁畫面請開 vim ~/site.conf）。',
+                ].join('\n'),
               },
               'about.md': {
                 name: 'about.md',
                 type: 'file',
+                mode: 0o644,
+                owner: 'root',
+                group: 'guest',
                 sectionId: 'about',
                 content: aboutContent,
+              },
+              'site.conf': {
+                name: 'site.conf',
+                type: 'file',
+                mode: 0o644,
+                owner: 'guest',
+                group: 'guest',
+                sectionId: 'about',
+                content: siteConfContent,
               },
               publications: {
                 name: 'publications',

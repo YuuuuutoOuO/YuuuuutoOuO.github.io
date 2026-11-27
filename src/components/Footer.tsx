@@ -4,7 +4,12 @@ import { SITE_PROFILE } from '../data/profile';
 import { useLanguage } from '../context/LanguageContext';
 import { decodeContactEmail, openMailClient } from '../utils/contact';
 
-export const Footer: React.FC = () => {
+interface FooterProps {
+  scratchpadText?: string | null;
+  onClearScratchpad?: () => void;
+}
+
+export const Footer: React.FC<FooterProps> = ({ scratchpadText, onClearScratchpad }) => {
   const { lang } = useLanguage();
   const year = new Date().getFullYear();
   const [revealedEmail, setRevealedEmail] = useState<string | null>(null);
@@ -24,6 +29,34 @@ export const Footer: React.FC = () => {
 
   return (
     <footer className="border-t border-stone-200 bg-white/70">
+      <div id="scratchpad-wall" data-vim-file="~/.scratchpad">
+        {scratchpadText !== null && scratchpadText !== undefined && (
+          <div className="max-w-5xl mx-auto px-5 sm:px-8 pt-6">
+            <div className="rounded-xl border border-amber-200/80 dark:border-amber-500/30 bg-amber-50/60 dark:bg-slate-900/90 p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="font-mono font-semibold text-amber-800 dark:text-amber-300">
+                  {lang === 'zh'
+                    ? '🕵️ ~/.scratchpad (0666 · -rw-rw-rw-) — 隱藏彩蛋塗鴉區（僅本機預覽，重整還原）'
+                    : '🕵️ ~/.scratchpad (0666 · -rw-rw-rw-) — Hidden Easter-Egg Wall (Local only; resets on reload)'}
+                </span>
+                {onClearScratchpad && (
+                  <button
+                    type="button"
+                    onClick={onClearScratchpad}
+                    className="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 border border-amber-300/70 dark:border-slate-700 text-[11px] font-medium text-amber-900 dark:text-amber-200 hover:underline"
+                  >
+                    {lang === 'zh' ? '清除塗鴉' : 'Clear'}
+                  </button>
+                )}
+              </div>
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs text-slate-700 dark:text-slate-200 leading-relaxed bg-white/70 dark:bg-slate-950/70 rounded-lg p-3 border border-stone-200/70 dark:border-slate-800">
+                {scratchpadText || (lang === 'zh' ? '（空白內容）' : '(empty)')}
+              </pre>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="max-w-5xl mx-auto px-5 sm:px-8 py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
         <div className="space-y-1 text-center sm:text-left">
           <p className="text-slate-700 font-medium">

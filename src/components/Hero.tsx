@@ -15,10 +15,24 @@ import { PUBLICATIONS } from '../data/publications';
 import { useLanguage } from '../context/LanguageContext';
 import { decodeContactEmail, openMailClient } from '../utils/contact';
 
-export const Hero: React.FC = () => {
+export interface HeroVimOverrides {
+  name?: string;
+  headline?: string;
+  affiliation?: string;
+  bio?: string;
+  notice?: string;
+}
+
+interface HeroProps {
+  vimOverrides?: HeroVimOverrides;
+  onResetVimOverrides?: () => void;
+}
+
+export const Hero: React.FC<HeroProps> = ({ vimOverrides = {}, onResetVimOverrides }) => {
   const { lang, t } = useLanguage();
   const [revealedEmail, setRevealedEmail] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const hasVimOverrides = Object.keys(vimOverrides).length > 0;
 
   const sciCount = PUBLICATIONS.filter((p) => p.type === 'sci-journal').length;
   const confCount = PUBLICATIONS.filter(
@@ -47,23 +61,42 @@ export const Hero: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
         {/* Main Bio Column */}
         <div className="lg:col-span-8 space-y-5">
+          {hasVimOverrides && (
+            <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200/80 text-xs text-amber-800">
+              <span>
+                {lang === 'zh'
+                  ? '⚡ Vim 趣味沙盒預覽中（僅本機瀏覽器生效，重整即還原）'
+                  : '⚡ Vim Fun Sandbox Active (Local preview only — resets on reload)'}
+              </span>
+              {onResetVimOverrides && (
+                <button
+                  type="button"
+                  onClick={onResetVimOverrides}
+                  className="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 border border-amber-300/80 text-[11px] font-medium hover:underline"
+                >
+                  {lang === 'zh' ? '一鍵還原' : 'Reset'}
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-academic-50 border border-academic-100 text-academic-900 text-xs font-medium">
             <GraduationCap className="w-3.5 h-3.5" />
-            <span>{t(SITE_PROFILE.headline)}</span>
+            <span data-vim-field="headline">{vimOverrides.headline ?? t(SITE_PROFILE.headline)}</span>
           </div>
 
           <div className="space-y-2">
             <h1 className="text-3xl sm:text-4xl font-semibold text-ink tracking-tight leading-tight">
               {lang === 'zh' ? (
                 <>
-                  {SITE_PROFILE.name.zh}{' '}
+                  <span data-vim-field="name">{vimOverrides.name ?? SITE_PROFILE.name.zh}</span>{' '}
                   <span className="text-slate-400 font-normal text-2xl sm:text-3xl">
                     ({SITE_PROFILE.name.en})
                   </span>
                 </>
               ) : (
                 <>
-                  {SITE_PROFILE.name.en}{' '}
+                  <span data-vim-field="name">{vimOverrides.name ?? SITE_PROFILE.name.en}</span>{' '}
                   <span className="text-slate-400 font-normal text-2xl sm:text-3xl">
                     ({SITE_PROFILE.name.zh})
                   </span>
@@ -71,7 +104,7 @@ export const Hero: React.FC = () => {
               )}
             </h1>
             <p className="text-sm sm:text-base text-slate-600 flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span>{t(SITE_PROFILE.affiliation)}</span>
+              <span data-vim-field="affiliation">{vimOverrides.affiliation ?? t(SITE_PROFILE.affiliation)}</span>
               <span className="inline-flex items-center gap-1 text-slate-500">
                 <MapPin className="w-3.5 h-3.5" />
                 {t(SITE_PROFILE.location)}
@@ -79,8 +112,8 @@ export const Hero: React.FC = () => {
             </p>
           </div>
 
-          <p className="text-slate-700 leading-relaxed text-[15px] sm:text-base max-w-2xl">
-            {t(SITE_PROFILE.bio)}
+          <p data-vim-field="bio" className="text-slate-700 leading-relaxed text-[15px] sm:text-base max-w-2xl">
+            {vimOverrides.bio ?? t(SITE_PROFILE.bio)}
           </p>
 
           {/* Research Interests */}
@@ -220,8 +253,8 @@ export const Hero: React.FC = () => {
                   : 'ACM ASSE 2024 Best Presentation Award (Univ. of Tokyo)'}
               </span>
             </div>
-            <p className="text-xs text-slate-500 leading-relaxed pt-1">
-              {t(SITE_PROFILE.seekingNotice)}
+            <p data-vim-field="notice" className="text-xs text-slate-500 leading-relaxed pt-1">
+              {vimOverrides.notice ?? t(SITE_PROFILE.seekingNotice)}
             </p>
           </div>
         </aside>

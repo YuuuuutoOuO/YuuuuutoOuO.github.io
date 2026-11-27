@@ -44,6 +44,7 @@ export interface ShellContext {
   scrollToSection: (sectionId: string) => void;
   triggerPanic: () => void;
   openStegoLab: () => void;
+  openVim: (absPath: string, node: VfsNode) => void;
   closeTerminal: () => void;
 }
 
@@ -61,9 +62,15 @@ export const AVAILABLE_COMMANDS = [
   'cd',
   'pwd',
   'cat',
+  'vim',
+  'vi',
   'stat',
   'file',
   'wc',
+  'head',
+  'tail',
+  'sort',
+  'uniq',
   'chmod',
   'tree',
   'grep',
@@ -106,11 +113,69 @@ function formatUptime(bootTimeMs: number): string {
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
+function splitPipeline(rawInput: string): string[] {
+  const stages: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+
+  for (let i = 0; i < rawInput.length; i += 1) {
+    const ch = rawInput[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+    } else if (ch === '|') {
+      stages.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  stages.push(current.trim());
+  return stages;
+}
+
+function getUtf8ByteLength(text: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length;
+  }
+  return text.length;
+}
+
 export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult {
   const trimmed = rawInput.trim();
   if (!trimmed) return { lines: [] };
 
-  const tokens = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((t) => t.replace(/^"|"$/g, '')) ?? [];
+  const stages = splitPipeline(trimmed);
+  if (stages.length > 1) {
+    if (stages.some((s) => !s)) {
+      return { lines: [makeLine('chu-sh: syntax error near unexpected token `|`', 'error')] };
+    }
+    let currentResult: ShellResult = { lines: [] };
+    let stdinLines: string[] | undefined = undefined;
+    for (const stage of stages) {
+      currentResult = executeSingleCommand(stage, ctx, stdinLines);
+      if (currentResult.clear) return currentResult;
+      if (currentResult.lines.length > 0 && currentResult.lines.every((l) => l.tone === 'error')) {
+        return currentResult;
+      }
+      stdinLines = currentResult.lines.map((l) => l.text);
+    }
+    return currentResult;
+  }
+
+  return executeSingleCommand(trimmed, ctx, undefined);
+}
+
+function executeSingleCommand(
+  trimmed: string,
+  ctx: ShellContext,
+  stdinLines?: string[],
+): ShellResult {
+  const tokens =
+    trimmed.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((t) => t.replace(/^["']|["']$/g, '')) ?? [];
   const cmd = tokens[0]?.toLowerCase() ?? '';
   const args = tokens.slice(1);
 
@@ -127,7 +192,9 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
         lines: [
           makeLine('ChuOS MiniKernel Shell — Available Commands', 'accent'),
           makeLine('  Files      : ls [-la|-lh], ll, cd <dir>, pwd, cat <file>, tree [dir]'),
-          makeLine('  Inspect    : stat <path>, file <path>, wc <file>, chmod <mode> <file>'),
+          makeLine('  Editor     : vim [file]  (fun local-only DOM sandbox; resets on reload)'),
+          makeLine('  Pipe/Text  : cmd1 | cmd2  (supports grep [-v|-c|-n], wc [-l|-w|-c], head, tail, sort, uniq)'),
+          makeLine('  Inspect    : stat <path>, file <path>, chmod <mode> <file>'),
           makeLine('  Search     : grep <keyword>, search <keyword>, goto <section|file>'),
           makeLine('  Controls   : theme [light|dark|toggle], lang [toggle], stego'),
           makeLine('  System     : neofetch, uname -a, id, whoami, ps, uptime, dmesg, clear'),
@@ -328,27 +395,191 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
     }
 
     case 'wc': {
-      if (!args[0]) {
-        return { lines: [makeLine('usage: wc <file>', 'warning')] };
+      let onlyLines = false;
+      let onlyWords = false;
+      let onlyBytes = false;
+      let fileArg: string | undefined;
+
+      for (const arg of args) {
+        if (arg.startsWith('-') && arg.length > 1) {
+          for (const ch of arg.slice(1)) {
+            if (ch === 'l') onlyLines = true;
+            else if (ch === 'w') onlyWords = true;
+            else if (ch === 'c') onlyBytes = true;
+          }
+        } else if (!fileArg) {
+          fileArg = arg;
+        }
       }
-      const target = normalizePath(ctx.cwd, args[0]);
-      const node = resolveNode(ctx.root, target);
-      if (!node) {
-        return { lines: [makeLine(`wc: ${args[0]}: No such file or directory`, 'error')] };
+
+      let text = '';
+      let label = '';
+      if (fileArg) {
+        const target = normalizePath(ctx.cwd, fileArg);
+        const node = resolveNode(ctx.root, target);
+        if (!node) {
+          return { lines: [makeLine(`wc: ${fileArg}: No such file or directory`, 'error')] };
+        }
+        if (node.type === 'dir') {
+          return { lines: [makeLine(`wc: ${fileArg}: Is a directory`, 'error')] };
+        }
+        text = node.content ?? '';
+        label = ` ${fileArg}`;
+      } else if (stdinLines !== undefined) {
+        text = stdinLines.join('\n');
+      } else {
+        return { lines: [makeLine('usage: wc [-l|-w|-c] <file>  (or pipe via | wc -l)', 'warning')] };
       }
-      if (node.type === 'dir') {
-        return { lines: [makeLine(`wc: ${args[0]}: Is a directory`, 'error')] };
-      }
-      const text = node.content ?? '';
-      const lineCount = text ? text.split('\n').length : 0;
+
+      const lineCount = fileArg
+        ? text
+          ? text.split('\n').length
+          : 0
+        : stdinLines
+          ? stdinLines.length
+          : 0;
       const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
-      const byteCount = getNodeByteSize(node);
+      const byteCount = getUtf8ByteLength(text);
+
+      if (onlyLines || onlyWords || onlyBytes) {
+        const parts: string[] = [];
+        if (onlyLines) parts.push(String(lineCount));
+        if (onlyWords) parts.push(String(wordCount));
+        if (onlyBytes) parts.push(String(byteCount));
+        return { lines: [makeLine(`${parts.join(' ')}${label}`)] };
+      }
+
       return {
         lines: [
           makeLine(
-            `${String(lineCount).padStart(4, ' ')} ${String(wordCount).padStart(5, ' ')} ${String(byteCount).padStart(6, ' ')} ${args[0]}`,
+            `${String(lineCount).padStart(4, ' ')} ${String(wordCount).padStart(5, ' ')} ${String(byteCount).padStart(6, ' ')}${label}`,
           ),
         ],
+      };
+    }
+
+    case 'head':
+    case 'tail': {
+      let count = 10;
+      let fileArg: string | undefined;
+
+      for (let i = 0; i < args.length; i += 1) {
+        const arg = args[i];
+        if (arg === '-n' && args[i + 1]) {
+          const parsed = Number.parseInt(args[i + 1], 10);
+          if (!Number.isNaN(parsed) && parsed >= 0) count = parsed;
+          i += 1;
+        } else if (/^-\d+$/.test(arg)) {
+          count = Number.parseInt(arg.slice(1), 10);
+        } else if (!arg.startsWith('-') && !fileArg) {
+          fileArg = arg;
+        }
+      }
+
+      let sourceLines: string[] = [];
+      if (fileArg) {
+        const target = normalizePath(ctx.cwd, fileArg);
+        const node = resolveNode(ctx.root, target);
+        if (!node) {
+          return { lines: [makeLine(`${cmd}: cannot open '${fileArg}': No such file or directory`, 'error')] };
+        }
+        if (node.type === 'dir') {
+          return { lines: [makeLine(`${cmd}: error reading '${fileArg}': Is a directory`, 'error')] };
+        }
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = stdinLines;
+      } else {
+        return { lines: [makeLine(`usage: ${cmd} [-n N] <file>  (or pipe via | ${cmd} -n 5)`, 'warning')] };
+      }
+
+      const sliced =
+        cmd === 'head'
+          ? sourceLines.slice(0, count)
+          : count === 0
+            ? []
+            : sourceLines.slice(-count);
+      return { lines: sliced.map((l) => makeLine(l)) };
+    }
+
+    case 'sort': {
+      const reverse = args.includes('-r');
+      const fileArg = args.find((a) => !a.startsWith('-'));
+      let sourceLines: string[] = [];
+
+      if (fileArg) {
+        const target = normalizePath(ctx.cwd, fileArg);
+        const node = resolveNode(ctx.root, target);
+        if (!node) {
+          return { lines: [makeLine(`sort: cannot read: ${fileArg}: No such file or directory`, 'error')] };
+        }
+        if (node.type === 'dir') {
+          return { lines: [makeLine(`sort: read failed: ${fileArg}: Is a directory`, 'error')] };
+        }
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = [...stdinLines];
+      } else {
+        return { lines: [makeLine('usage: sort [-r] <file>  (or pipe via | sort)', 'warning')] };
+      }
+
+      sourceLines.sort((a, b) => (reverse ? b.localeCompare(a) : a.localeCompare(b)));
+      return { lines: sourceLines.map((l) => makeLine(l)) };
+    }
+
+    case 'uniq': {
+      const showCount = args.includes('-c');
+      const fileArg = args.find((a) => !a.startsWith('-'));
+      let sourceLines: string[] = [];
+
+      if (fileArg) {
+        const target = normalizePath(ctx.cwd, fileArg);
+        const node = resolveNode(ctx.root, target);
+        if (!node) {
+          return { lines: [makeLine(`uniq: ${fileArg}: No such file or directory`, 'error')] };
+        }
+        if (node.type === 'dir') {
+          return { lines: [makeLine(`uniq: ${fileArg}: Is a directory`, 'error')] };
+        }
+        sourceLines = (node.content ?? '').split('\n');
+      } else if (stdinLines !== undefined) {
+        sourceLines = stdinLines;
+      } else {
+        return { lines: [makeLine('usage: uniq [-c] <file>  (or pipe via | uniq)', 'warning')] };
+      }
+
+      const out: string[] = [];
+      for (const line of sourceLines) {
+        if (out.length === 0) {
+          out.push(line);
+        } else if (out[out.length - 1] !== line) {
+          out.push(line);
+        }
+      }
+      if (!showCount) {
+        return { lines: out.map((l) => makeLine(l)) };
+      }
+      const counted: string[] = [];
+      for (const line of sourceLines) {
+        if (counted.length === 0) {
+          counted.push(`1\t${line}`);
+        } else {
+          const prev = counted[counted.length - 1];
+          const tabIdx = prev.indexOf('\t');
+          const prevText = prev.slice(tabIdx + 1);
+          if (prevText === line) {
+            const c = Number.parseInt(prev.slice(0, tabIdx), 10) + 1;
+            counted[counted.length - 1] = `${c}\t${line}`;
+          } else {
+            counted.push(`1\t${line}`);
+          }
+        }
+      }
+      return {
+        lines: counted.map((entry) => {
+          const tabIdx = entry.indexOf('\t');
+          return makeLine(`${entry.slice(0, tabIdx).padStart(4, ' ')} ${entry.slice(tabIdx + 1)}`);
+        }),
       };
     }
 
@@ -384,8 +615,33 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
       return { lines: [] };
     }
 
+    case 'vim':
+    case 'vi': {
+      const rawArg = args[0] ?? '~/site.conf';
+      const target = normalizePath(ctx.cwd, rawArg);
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`vim: ${rawArg}: No such file or directory (try: vim ~/site.conf)`, 'error')] };
+      }
+      if (node.type === 'dir') {
+        return { lines: [makeLine(`vim: ${rawArg}: Is a directory`, 'error')] };
+      }
+      ctx.openVim(target, node);
+      return {
+        lines: [
+          makeLine(
+            `Opened ${formatDisplayPath(target)} in Vim (${node.readonly ? 'readonly' : 'fun local DOM sandbox — resets on reload'}).`,
+            'accent',
+          ),
+        ],
+      };
+    }
+
     case 'cat': {
       if (!args[0]) {
+        if (stdinLines !== undefined) {
+          return { lines: stdinLines.map((l) => makeLine(l)) };
+        }
         return { lines: [makeLine('usage: cat <file>', 'warning')] };
       }
       const target = normalizePath(ctx.cwd, args[0]);
@@ -420,6 +676,44 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
     case 'grep':
     case 'search':
     case 'find': {
+      if (stdinLines !== undefined) {
+        let invert = false;
+        let countOnly = false;
+        let lineNumbers = false;
+        const patternParts: string[] = [];
+
+        for (const arg of args) {
+          if (arg.startsWith('-') && arg.length > 1) {
+            for (const ch of arg.slice(1)) {
+              if (ch === 'v') invert = true;
+              else if (ch === 'c') countOnly = true;
+              else if (ch === 'n') lineNumbers = true;
+              // -i is supported as default case-insensitive matching
+            }
+          } else {
+            patternParts.push(arg);
+          }
+        }
+
+        const pattern = patternParts.join(' ').trim();
+        if (!pattern) {
+          return { lines: [makeLine(`usage: ... | ${cmd} [-i|-v|-c|-n] <pattern>`, 'warning')] };
+        }
+        const q = pattern.toLowerCase();
+        const matched: TerminalLine[] = [];
+        stdinLines.forEach((line, idx) => {
+          const isMatch = line.toLowerCase().includes(q);
+          if (invert ? !isMatch : isMatch) {
+            matched.push(makeLine(lineNumbers ? `${idx + 1}:${line}` : line));
+          }
+        });
+
+        if (countOnly) {
+          return { lines: [makeLine(String(matched.length))] };
+        }
+        return { lines: matched };
+      }
+
       const query = args.join(' ').trim();
       if (!query) {
         return { lines: [makeLine(`usage: ${cmd} <keyword>  (e.g. ${cmd} Nessus)`, 'warning')] };

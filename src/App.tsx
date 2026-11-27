@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { LanguageProvider } from './context/LanguageContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
-import { Hero } from './components/Hero';
+import { Hero, type HeroVimOverrides } from './components/Hero';
 import { Publications } from './components/Publications';
 import { SherryShowcase } from './components/SherryShowcase';
 import { Projects } from './components/Projects';
@@ -24,6 +24,8 @@ export const App: React.FC = () => {
   const [complianceOpen, setComplianceOpen] = useState(false);
   const [kvCacheOpen, setKvCacheOpen] = useState(false);
   const [labModule, setLabModule] = useState<LabModule>('stego');
+  const [heroOverrides, setHeroOverrides] = useState<HeroVimOverrides>({});
+  const [scratchpadText, setScratchpadText] = useState<string | null>(null);
 
   const openLab = (module: LabModule = 'stego') => {
     setLabModule(module);
@@ -39,14 +41,20 @@ export const App: React.FC = () => {
             onOpenStegoLab={() => openLab('stego')}
           />
           <main className="flex-1 max-w-5xl w-full mx-auto px-5 sm:px-8">
-            <Hero />
+            <Hero
+              vimOverrides={heroOverrides}
+              onResetVimOverrides={() => setHeroOverrides({})}
+            />
             <Publications />
             <SherryShowcase onOpenKvCacheLab={() => setKvCacheOpen(true)} />
             <Projects />
             <Experience />
             <Credentials />
           </main>
-          <Footer />
+          <Footer
+            scratchpadText={scratchpadText}
+            onClearScratchpad={() => setScratchpadText(null)}
+          />
           <LabDock
             onOpenLab={openLab}
             onOpenComplianceLab={() => setComplianceOpen(true)}
@@ -60,6 +68,9 @@ export const App: React.FC = () => {
             onClose={() => setTerminalOpen(false)}
             onTriggerRampage={() => setRampageActive(true)}
             onOpenStegoLab={() => openLab('stego')}
+            onApplyHeroOverrides={(next) => setHeroOverrides(next)}
+            onResetHeroOverrides={() => setHeroOverrides({})}
+            onUpdateScratchpad={(text) => setScratchpadText(text)}
           />
           <StegoLabModal
             open={stegoOpen}

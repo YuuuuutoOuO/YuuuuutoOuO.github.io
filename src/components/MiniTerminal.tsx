@@ -2,8 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Minus, Terminal as TerminalIcon, X, Maximize2, Minimize2 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useTheme } from '../context/ThemeContext';
-import { buildVfs, formatDisplayPath, getHomeDir } from '../kernel/vfs';
+import {
+  buildVfs,
+  formatDisplayPath,
+  formatOctalMode,
+  getHomeDir,
+  resolveNode,
+  type VfsNode,
+} from '../kernel/vfs';
 import { executeCommand, getTabCompletion, type OutputTone, type TerminalLine } from '../kernel/shell';
+import type { HeroVimOverrides } from './Hero';
 
 interface MiniTerminalProps {
   open: boolean;
@@ -11,11 +19,36 @@ interface MiniTerminalProps {
   onOpen: () => void;
   onTriggerRampage: () => void;
   onOpenStegoLab: () => void;
+  onApplyHeroOverrides: (overrides: HeroVimOverrides) => void;
+  onResetHeroOverrides: () => void;
+  onUpdateScratchpad: (text: string | null) => void;
 }
 
 type ResizeEdge = 'right' | 'top' | 'top-right';
+type VimMode = 'NORMAL' | 'INSERT' | 'COMMAND';
 
-const QUICK_COMMANDS = ['help', 'ls -la', 'stat about.md', 'neofetch', 'tree', 'grep Trivy', 'sudo hire-me'];
+interface VimSession {
+  absPath: string;
+  content: string;
+  savedContent: string;
+  readonly: boolean;
+  octalMode: string;
+  mode: VimMode;
+  commandText: string;
+  statusMsg: string;
+}
+
+const SITE_CONF_PATH = '/home/guest/site.conf';
+const SCRATCHPAD_PATH = '/home/guest/.scratchpad';
+const VIM_DOM_FIELD_MAP: Record<string, string> = {
+  NAME: 'name',
+  HEADLINE: 'headline',
+  AFFILIATION: 'affiliation',
+  BIO: 'bio',
+  NOTICE: 'notice',
+};
+
+const QUICK_COMMANDS = ['help', 'ls -la', 'vim site.conf', 'stat about.md', 'neofetch', 'grep Trivy', 'sudo hire-me'];
 const MIN_WIDTH = 420;
 const MIN_HEIGHT = 300;
 const DEFAULT_WIDTH = 660;
@@ -36,6 +69,9 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
   onOpen,
   onTriggerRampage,
   onOpenStegoLab,
+  onApplyHeroOverrides,
+  onResetHeroOverrides,
+  onUpdateScratchpad,
 }) => {
   const { lang, toggleLang } = useLanguage();
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -52,6 +88,10 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
   );
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
   const [panicCountdown, setPanicCountdown] = useState<number | null>(null);
+  const [vfsOverrides, setVfsOverrides] = useState<Record<string, string>>({});
+  const [vimSession, setVimSession] = useState<VimSession | null>(null);
+  const vimTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const vimCmdRef = useRef<HTMLInputElement>(null);
   const [lines, setLines] = useState<TerminalLine[]>(() => [
     {
       id: 'boot-1',
@@ -60,7 +100,7 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
     },
     {
       id: 'boot-2',
-      text: 'Type "help", "ls -la", "stat about.md", or drag edges / click ⤢ to resize.',
+      text: 'Type "help", "ls -la", "vim site.conf" (fun F12 sandbox), or drag edges to resize.',
       tone: 'muted',
     },
   ]);
@@ -79,13 +119,31 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const vfsRoot = useMemo(() => buildVfs(lang, bootTimeMs), [lang, bootTimeMs]);
+  const vfsRoot = useMemo(() => {
+    const root = buildVfs(lang, bootTimeMs);
+    for (const [absPath, content] of Object.entries(vfsOverrides)) {
+      const node = resolveNode(root, absPath);
+      if (node && node.type === 'file') {
+        node.content = content;
+      }
+    }
+    return root;
+  }, [lang, bootTimeMs, vfsOverrides]);
 
   useEffect(() => {
-    if (open && !minimized) {
+    if (open && !minimized && !vimSession) {
       setTimeout(() => inputRef.current?.focus(), 30);
     }
-  }, [open, minimized]);
+  }, [open, minimized, vimSession]);
+
+  useEffect(() => {
+    if (!vimSession) return;
+    if (vimSession.mode === 'COMMAND') {
+      setTimeout(() => vimCmdRef.current?.focus(), 10);
+    } else {
+      setTimeout(() => vimTextareaRef.current?.focus(), 10);
+    }
+  }, [vimSession?.mode, Boolean(vimSession)]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -107,12 +165,19 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
           onOpen();
         }
       } else if (e.key === 'Escape' && open && !minimized) {
+        if (vimSession) {
+          e.preventDefault();
+          setVimSession((prev) =>
+            prev ? { ...prev, mode: 'NORMAL', commandText: '', statusMsg: '-- NORMAL --' } : null,
+          );
+          return;
+        }
         onClose();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, minimized, onClose, onOpen]);
+  }, [open, minimized, vimSession, onClose, onOpen]);
 
   // Kernel panic auto-reboot countdown
   useEffect(() => {
@@ -189,6 +254,222 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
     }
   };
 
+  const applySiteConfToDom = (content: string): number => {
+    const parsed: HeroVimOverrides = {};
+    let updatedCount = 0;
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const normalized = line.replace('＝', '=');
+      const eqIdx = normalized.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const key = normalized.slice(0, eqIdx).trim().toUpperCase();
+      const val = normalized.slice(eqIdx + 1).trim();
+      const field = VIM_DOM_FIELD_MAP[key] as keyof HeroVimOverrides | undefined;
+      if (!field || !val) continue;
+      parsed[field] = val;
+      updatedCount += 1;
+    }
+    if (updatedCount > 0) {
+      onApplyHeroOverrides(parsed);
+    }
+    return updatedCount;
+  };
+
+  const resetSiteConfDom = () => {
+    onResetHeroOverrides();
+    setVfsOverrides((prev) => {
+      const next = { ...prev };
+      delete next[SITE_CONF_PATH];
+      return next;
+    });
+  };
+
+  const openVimEditor = (absPath: string, node: VfsNode) => {
+    const initial = node.content ?? '';
+    setVimSession({
+      absPath,
+      content: initial,
+      savedContent: initial,
+      readonly: Boolean(node.readonly),
+      octalMode: formatOctalMode(node),
+      mode: 'NORMAL',
+      commandText: '',
+      statusMsg: node.readonly
+        ? `"${formatDisplayPath(absPath)}" [readonly]`
+        : `"${formatDisplayPath(absPath)}" ${initial.split('\n').length}L — press 'i' to edit, ':wq' to apply`,
+    });
+  };
+
+  const executeVimCommand = (rawCmd: string) => {
+    if (!vimSession) return;
+    const cmd = rawCmd.trim().replace(/^:/, '');
+    const isDirty = vimSession.content !== vimSession.savedContent;
+
+    if (cmd === 'q!') {
+      setVimSession(null);
+      setLines((prev) => [
+        ...prev.slice(-160),
+        { id: `vim-q-${Date.now()}`, text: `[vim] Discarded changes to ${formatDisplayPath(vimSession.absPath)}.`, tone: 'muted' },
+      ]);
+      return;
+    }
+
+    if (cmd === 'q') {
+      if (isDirty) {
+        setVimSession((prev) =>
+          prev
+            ? { ...prev, mode: 'NORMAL', commandText: '', statusMsg: 'E37: No write since last change (add ! to override)' }
+            : null,
+        );
+        return;
+      }
+      setVimSession(null);
+      return;
+    }
+
+    if (cmd === 'reset') {
+      if (vimSession.absPath === SITE_CONF_PATH) {
+        resetSiteConfDom();
+        const freshRoot = buildVfs(lang, bootTimeMs);
+        const freshContent = resolveNode(freshRoot, SITE_CONF_PATH)?.content ?? '';
+        setVimSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                content: freshContent,
+                savedContent: freshContent,
+                mode: 'NORMAL',
+                commandText: '',
+                statusMsg: 'Restored original page DOM & site.conf.',
+              }
+            : null,
+        );
+        return;
+      }
+      if (vimSession.absPath === SCRATCHPAD_PATH) {
+        onUpdateScratchpad(null);
+        setVfsOverrides((prev) => {
+          const next = { ...prev };
+          delete next[SCRATCHPAD_PATH];
+          return next;
+        });
+        const freshRoot = buildVfs(lang, bootTimeMs);
+        const freshContent = resolveNode(freshRoot, SCRATCHPAD_PATH)?.content ?? '';
+        setVimSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                content: freshContent,
+                savedContent: freshContent,
+                mode: 'NORMAL',
+                commandText: '',
+                statusMsg: 'Cleared scratchpad wall & restored default .scratchpad.',
+              }
+            : null,
+        );
+        return;
+      }
+      setVimSession((prev) =>
+        prev ? { ...prev, mode: 'NORMAL', commandText: '', statusMsg: 'Nothing to reset on this file.' } : null,
+      );
+      return;
+    }
+
+    if (cmd === 'w' || cmd === 'wq' || cmd === 'x' || cmd === 'wq!' || cmd === 'w!') {
+      if (vimSession.readonly) {
+        setVimSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                mode: 'NORMAL',
+                commandText: '',
+                statusMsg:
+                  lang === 'zh'
+                    ? "E45: 此檔為 root 擁有 (0644 唯讀)，無法寫入；想改首頁畫面請開 vim ~/site.conf"
+                    : "E45: 'readonly' option is set (root-owned 0644); run 'vim ~/site.conf' to edit live page",
+              }
+            : null,
+        );
+        return;
+      }
+
+      const nextContent = vimSession.content;
+      setVfsOverrides((prev) => ({ ...prev, [vimSession.absPath]: nextContent }));
+
+      let domSummary = '';
+      if (vimSession.absPath === SITE_CONF_PATH) {
+        const changed = applySiteConfToDom(nextContent);
+        domSummary =
+          lang === 'zh'
+            ? `已套用 ${changed} 項首頁欄位（僅限本機瀏覽器預覽，如同 F12，重整即還原）`
+            : `Applied ${changed} live Hero field(s) (local browser preview only, like F12; resets on reload)`;
+        if (changed > 0) {
+          setMaximized(false);
+          scrollToSection('about');
+        }
+      } else if (vimSession.absPath === SCRATCHPAD_PATH) {
+        const nonCommentLines = nextContent
+          .split('\n')
+          .filter((l) => !l.trim().startsWith('#'))
+          .join('\n')
+          .trim();
+        onUpdateScratchpad(nonCommentLines || nextContent.trim());
+        domSummary =
+          lang === 'zh'
+            ? '🕵️ 已將 ~/.scratchpad (0666) 內容即時同步到頁尾彩蛋塗鴉區！（僅本機預覽，重整即還原）'
+            : '🕵️ Synced ~/.scratchpad (0666) to the live Footer easter-egg wall! (Local only; resets on reload)';
+        setMaximized(false);
+        setTimeout(() => scrollToSection('scratchpad-wall'), 40);
+      } else {
+        domSummary =
+          lang === 'zh'
+            ? `[vim] 已寫入記憶體 VFS：${formatDisplayPath(vimSession.absPath)}（若要即時改首頁畫面請執行 vim ~/site.conf）`
+            : `[vim] Wrote in-memory VFS: ${formatDisplayPath(vimSession.absPath)} (run "vim ~/site.conf" to edit live Hero DOM)`;
+      }
+
+      if (cmd === 'w' || cmd === 'w!') {
+        setVimSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                savedContent: nextContent,
+                mode: 'NORMAL',
+                commandText: '',
+                statusMsg: domSummary || `"${formatDisplayPath(prev.absPath)}" written (session memory only)`,
+              }
+            : null,
+        );
+        return;
+      }
+
+      setVimSession(null);
+      setLines((prev) => [
+        ...prev.slice(-160),
+        {
+          id: `vim-w-${Date.now()}`,
+          text:
+            domSummary ||
+            `[vim] Wrote ${formatDisplayPath(vimSession.absPath)} (session-only memory; resets on reload).`,
+          tone: 'success',
+          action:
+            vimSession.absPath === SITE_CONF_PATH
+              ? { label: 'goto #about', sectionId: 'about' }
+              : vimSession.absPath === SCRATCHPAD_PATH
+                ? { label: 'goto #scratchpad-wall', sectionId: 'scratchpad-wall' }
+                : undefined,
+        },
+      ]);
+      return;
+    }
+
+    setVimSession((prev) =>
+      prev
+        ? { ...prev, mode: 'NORMAL', commandText: '', statusMsg: `E492: Not an editor command: ${cmd}` }
+        : null,
+    );
+  };
+
   const runCommand = (rawCmd: string) => {
     const trimmed = rawCmd.trim();
     if (!trimmed) {
@@ -230,6 +511,7 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
         onClose();
         onOpenStegoLab();
       },
+      openVim: openVimEditor,
       closeTerminal: onClose,
     });
 
@@ -426,80 +708,250 @@ export const MiniTerminal: React.FC<MiniTerminalProps> = ({
         </div>
       </div>
 
-      {/* Quick Command Chips */}
-      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/60 border-b border-slate-800/80 overflow-x-auto shrink-0">
-        {QUICK_COMMANDS.map((cmd) => (
-          <button
-            key={cmd}
-            type="button"
-            onClick={() => runCommand(cmd)}
-            className="shrink-0 px-2 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-[11px] text-slate-300 hover:text-white border border-slate-700/70 transition-colors"
-          >
-            {cmd}
-          </button>
-        ))}
-      </div>
+      {/* Quick Command Chips (hidden while in Vim) */}
+      {!vimSession && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/60 border-b border-slate-800/80 overflow-x-auto shrink-0">
+          {QUICK_COMMANDS.map((cmd) => (
+            <button
+              key={cmd}
+              type="button"
+              onClick={() => runCommand(cmd)}
+              className="shrink-0 px-2 py-0.5 rounded bg-slate-800/90 hover:bg-slate-700 text-[11px] text-slate-300 hover:text-white border border-slate-700/70 transition-colors"
+            >
+              {cmd}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {/* Output Area */}
-      <div
-        ref={scrollRef}
-        onClick={() => inputRef.current?.focus()}
-        className="relative flex-1 min-h-0 overflow-y-auto px-3.5 py-3 space-y-1 leading-relaxed"
-      >
-        {panicCountdown !== null ? (
-          <div className="h-full flex flex-col justify-center items-start bg-rose-950/60 border border-rose-500/50 rounded-lg p-4 text-rose-200 space-y-2">
-            <p className="font-bold text-rose-400">*** KERNEL PANIC - NOT SYNCING ***</p>
-            <p>VFS: Attempted to kill init / purge portfolio root filesystem.</p>
-            <p className="text-rose-300/90">
-              Sherry-Agent Guard intercepted destructive syscall.
-            </p>
-            <p className="text-amber-300 pt-1">
-              Auto-rebooting ChuOS MiniKernel in {panicCountdown}s...
-            </p>
+      {vimSession ? (
+        /* Inline Vim Editor (Fun Local-Only DOM Sandbox) */
+        <div className="flex-1 min-h-0 flex flex-col bg-slate-950">
+          {/* Fun-only Disclaimer Banner */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-amber-500/10 border-b border-amber-400/25 text-[11px] text-amber-200 shrink-0">
+            <span>
+              {lang === 'zh'
+                ? '⚡ 趣味沙盒（純屬好玩）：僅修改本機瀏覽器畫面，等同 F12 暫時預覽，重整頁面即還原。'
+                : '⚡ Fun Sandbox (Just for fun): Local browser DOM preview only (like F12); resets on reload.'}
+            </span>
+            <span className="font-mono text-[10px] text-amber-300/80">
+              {formatDisplayPath(vimSession.absPath)} ({vimSession.octalMode})
+              {vimSession.content !== vimSession.savedContent ? ' [+]' : ''}
+              {vimSession.readonly ? ' [RO]' : ''}
+            </span>
           </div>
-        ) : (
-          lines.map((line) => (
-            <div key={line.id} className="flex items-start justify-between gap-2 whitespace-pre-wrap break-words">
-              <span className={TONE_CLASS[line.tone ?? 'normal']}>{line.text}</span>
-              {line.action && (
+
+          {/* Vim Buffer Area with Line Numbers */}
+          <div className="flex-1 min-h-0 flex overflow-hidden">
+            <div className="select-none py-2.5 px-2 text-right text-[11px] leading-relaxed text-slate-600 bg-slate-900/50 border-r border-slate-800/80 overflow-hidden shrink-0">
+              {vimSession.content.split('\n').map((_, idx) => (
+                <div key={idx}>{idx + 1}</div>
+              ))}
+            </div>
+            <textarea
+              ref={vimTextareaRef}
+              value={vimSession.content}
+              readOnly={vimSession.mode !== 'INSERT'}
+              onChange={(e) =>
+                setVimSession((prev) => (prev ? { ...prev, content: e.target.value } : null))
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setVimSession((prev) =>
+                    prev ? { ...prev, mode: 'NORMAL', statusMsg: '-- NORMAL --' } : null,
+                  );
+                  return;
+                }
+                if (vimSession.mode === 'NORMAL') {
+                  if (e.key === 'i' || e.key === 'a') {
+                    e.preventDefault();
+                    if (vimSession.readonly) {
+                      setVimSession((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              statusMsg:
+                                lang === 'zh'
+                                  ? 'W10: 唯讀檔 (root:guest 0644，guest 無寫入權限) — 請改開 vim ~/site.conf'
+                                  : 'W10: Readonly file (root-owned 0644) — run "vim ~/site.conf" for live sandbox',
+                            }
+                          : null,
+                      );
+                      return;
+                    }
+                    setVimSession((prev) =>
+                      prev ? { ...prev, mode: 'INSERT', statusMsg: '-- INSERT -- (Esc to return)' } : null,
+                    );
+                  } else if (e.key === ':') {
+                    e.preventDefault();
+                    setVimSession((prev) =>
+                      prev ? { ...prev, mode: 'COMMAND', commandText: '', statusMsg: '' } : null,
+                    );
+                  }
+                }
+              }}
+              spellCheck={false}
+              className={`flex-1 w-full h-full resize-none bg-transparent px-3 py-2.5 text-xs leading-relaxed focus:outline-none overflow-y-auto ${
+                vimSession.mode === 'INSERT' ? 'text-slate-100' : 'text-slate-300 caret-amber-400'
+              }`}
+            />
+          </div>
+
+          {/* Vim Status & Command Bar */}
+          <div className="border-t border-slate-800 bg-slate-900/95 px-3 py-2 space-y-1.5 shrink-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <div className="flex items-center gap-2 min-w-0">
+                <span
+                  className={`px-1.5 py-0.5 rounded font-semibold text-[10px] shrink-0 ${
+                    vimSession.mode === 'INSERT'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                      : vimSession.mode === 'COMMAND'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
+                        : 'bg-sky-500/20 text-sky-300 border border-sky-400/30'
+                  }`}
+                >
+                  {vimSession.mode}
+                </span>
+                {vimSession.mode === 'COMMAND' ? (
+                  <div className="flex items-center gap-1 flex-1 min-w-[140px]">
+                    <span className="text-amber-300 font-bold">:</span>
+                    <input
+                      ref={vimCmdRef}
+                      type="text"
+                      value={vimSession.commandText}
+                      onChange={(e) =>
+                        setVimSession((prev) => (prev ? { ...prev, commandText: e.target.value } : null))
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          executeVimCommand(vimSession.commandText);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setVimSession((prev) =>
+                            prev ? { ...prev, mode: 'NORMAL', commandText: '', statusMsg: '-- NORMAL --' } : null,
+                          );
+                        }
+                      }}
+                      placeholder="wq / w / q! / reset"
+                      spellCheck={false}
+                      className="flex-1 bg-transparent text-slate-100 placeholder:text-slate-500 focus:outline-none text-xs"
+                    />
+                  </div>
+                ) : (
+                  <span className="text-slate-400 truncate">{vimSession.statusMsg}</span>
+                )}
+              </div>
+
+              {/* Clickable helpers so non-Vim visitors never get trapped */}
+              <div className="flex items-center gap-1.5 shrink-0">
+                {!vimSession.readonly && vimSession.mode !== 'INSERT' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setVimSession((prev) =>
+                        prev ? { ...prev, mode: 'INSERT', statusMsg: '-- INSERT -- (Esc to return)' } : null,
+                      )
+                    }
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700 text-[10px]"
+                  >
+                    i {lang === 'zh' ? '編輯' : 'Insert'}
+                  </button>
+                )}
+                {!vimSession.readonly && (
+                  <button
+                    type="button"
+                    onClick={() => executeVimCommand('wq')}
+                    className="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-400/30 text-[10px]"
+                  >
+                    :wq {lang === 'zh' ? '套用' : 'Apply'}
+                  </button>
+                )}
+                {(vimSession.absPath === SITE_CONF_PATH || vimSession.absPath === SCRATCHPAD_PATH) && (
+                  <button
+                    type="button"
+                    onClick={() => executeVimCommand('reset')}
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-[10px]"
+                  >
+                    :reset
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (line.action?.sectionId) {
-                      scrollToSection(line.action.sectionId);
-                    } else if (line.action?.command) {
-                      runCommand(line.action.command);
-                    }
-                  }}
-                  className="shrink-0 px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 text-[10px] border border-sky-400/30 transition-colors"
+                  onClick={() => executeVimCommand('q!')}
+                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 text-[10px]"
                 >
-                  {line.action.label}
+                  :q! {lang === 'zh' ? '離開' : 'Quit'}
                 </button>
-              )}
+              </div>
             </div>
-          ))
-        )}
-      </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Output Area */}
+          <div
+            ref={scrollRef}
+            onClick={() => inputRef.current?.focus()}
+            className="relative flex-1 min-h-0 overflow-y-auto px-3.5 py-3 space-y-1 leading-relaxed"
+          >
+            {panicCountdown !== null ? (
+              <div className="h-full flex flex-col justify-center items-start bg-rose-950/60 border border-rose-500/50 rounded-lg p-4 text-rose-200 space-y-2">
+                <p className="font-bold text-rose-400">*** KERNEL PANIC - NOT SYNCING ***</p>
+                <p>VFS: Attempted to kill init / purge portfolio root filesystem.</p>
+                <p className="text-rose-300/90">
+                  Sherry-Agent Guard intercepted destructive syscall.
+                </p>
+                <p className="text-amber-300 pt-1">
+                  Auto-rebooting ChuOS MiniKernel in {panicCountdown}s...
+                </p>
+              </div>
+            ) : (
+              lines.map((line) => (
+                <div key={line.id} className="flex items-start justify-between gap-2 whitespace-pre-wrap break-words">
+                  <span className={TONE_CLASS[line.tone ?? 'normal']}>{line.text}</span>
+                  {line.action && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (line.action?.sectionId) {
+                          scrollToSection(line.action.sectionId);
+                        } else if (line.action?.command) {
+                          runCommand(line.action.command);
+                        }
+                      }}
+                      className="shrink-0 px-1.5 py-0.5 rounded bg-sky-500/20 hover:bg-sky-500/35 text-sky-300 text-[10px] border border-sky-400/30 transition-colors"
+                    >
+                      {line.action.label}
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
 
-      {/* Prompt Input */}
-      <div className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-900/90 border-t border-slate-800">
-        <span className="text-emerald-400 shrink-0 select-none">
-          guest@chuos:{formatDisplayPath(cwd)}$
-        </span>
-        <input
-          ref={inputRef}
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={panicCountdown !== null}
-          placeholder={lang === 'zh' ? '輸入指令或 grep 關鍵字...' : 'Type a command or grep <keyword>...'}
-          spellCheck={false}
-          autoComplete="off"
-          className="flex-1 bg-transparent text-slate-100 placeholder:text-slate-500 focus:outline-none text-xs"
-        />
-      </div>
+          {/* Prompt Input */}
+          <div className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-900/90 border-t border-slate-800">
+            <span className="text-emerald-400 shrink-0 select-none">
+              guest@chuos:{formatDisplayPath(cwd)}$
+            </span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={panicCountdown !== null}
+              placeholder={lang === 'zh' ? '輸入指令或 grep 關鍵字...' : 'Type a command or grep <keyword>...'}
+              spellCheck={false}
+              autoComplete="off"
+              className="flex-1 bg-transparent text-slate-100 placeholder:text-slate-500 focus:outline-none text-xs"
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 };
