@@ -47,7 +47,7 @@ export interface ShellResult {
   clear?: boolean;
 }
 
-const VALID_SECTIONS = ['about', 'publications', 'projects', 'experience', 'credentials'] as const;
+const VALID_SECTIONS = ['about', 'publications', 'sherry', 'projects', 'experience', 'credentials'] as const;
 
 export const AVAILABLE_COMMANDS = [
   'help',
@@ -322,7 +322,7 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
           makeLine(`  ██║     ███████║██║   ██║   OS      : ChuOS MiniKernel v1.0`, 'normal'),
           makeLine(`  ██║     ██╔══██║██║   ██║   Owner   : ${SITE_PROFILE.name.en} (${SITE_PROFILE.name.zh})`, 'normal'),
           makeLine(`  ╚██████╗██║  ██║╚██████╔╝   Uptime  : ${formatUptime(ctx.bootTimeMs)}`, 'normal'),
-          makeLine(`   ╚═════╝╚═╝  ╚═╝ ╚═════╝    Records : ${PUBLICATIONS.length} papers · ${PROJECTS.length} projects`, 'normal'),
+          makeLine(`   ╚═════╝╚═╝  ╚═╝ ╚═════╝    Records : ${PUBLICATIONS.length} papers · 1 flagship + ${PROJECTS.length} projects`, 'normal'),
           makeLine(`                              Theme   : ${ctx.theme} | Lang: ${ctx.lang}`, 'muted'),
           makeLine(`                              Stack   : Python · AI Agents · Image Security · Cloud GCB`, 'muted'),
         ],
@@ -334,7 +334,7 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
           lines: [
             makeLine('[sudo] authenticating recruiter credentials... OK', 'success'),
             makeLine('Allocating Ph.D. Candidate (AI Systems & Cybersecurity)...', 'accent'),
-            makeLine('Verifying Nessus scan: 0 Critical / 0 High ... PASS', 'success'),
+            makeLine('Verifying 3-layer audit (Nessus / Trivy 0 CVE / Bandit 0 High) ... PASS', 'success'),
             makeLine('Verifying Linux GCB compliance: 66/66 ... PASS', 'success'),
             makeLine('Ready for collaboration! Expected graduation: Jul 2027.', 'warning', {
               label: 'goto #about',

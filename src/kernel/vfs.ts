@@ -1,6 +1,13 @@
 import { SITE_PROFILE } from '../data/profile';
 import { PUBLICATIONS } from '../data/publications';
 import { PROJECTS } from '../data/projects';
+import {
+  SHERRY_AUDIT_COMPARISON,
+  SHERRY_CORE_CAPABILITIES,
+  SHERRY_META,
+  SHERRY_OVERVIEW_OUTCOMES,
+  SHERRY_SECURITY_TOOLS,
+} from '../data/sherry';
 import { EDUCATION, EXPERIENCE, RESEARCH_GRANTS } from '../data/experience';
 import { AWARDS, CERTIFICATIONS, SKILL_GROUPS } from '../data/credentials';
 import type { Language } from '../types/portfolio';
@@ -142,6 +149,40 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
     (g) => `[${pick(g.title)}]\n  ${g.skills.join(' · ')}`,
   ).join('\n\n');
 
+  const sherryOverviewContent = [
+    `# ${pick(SHERRY_META.name)}`,
+    `Public Release: ${SHERRY_META.publicRelease} | Internal Audit: ${SHERRY_META.devMilestone} | ${SHERRY_META.period}`,
+    `Role: ${pick(SHERRY_META.role)}`,
+    '',
+    pick(SHERRY_META.summary),
+    '',
+    pick(SHERRY_META.versionNotice),
+    '',
+    'Key Outcomes:',
+    ...SHERRY_OVERVIEW_OUTCOMES.map((o) => `  * ${pick(o)}`),
+    '',
+    'Core Capabilities (v1.10.0):',
+    ...SHERRY_CORE_CAPABILITIES.map((c) => `  - ${pick(c.title)}: ${pick(c.summary)}`),
+    '',
+    `Tech Stack: ${SHERRY_META.techStack.join(', ')}`,
+    `Repo: ${SHERRY_META.repoUrl}`,
+  ].join('\n');
+
+  const sherrySecurityContent = [
+    '# Sherry 3-Layer Security Audit (DAST + SCA/Secrets + SAST)',
+    `Scope: Web UI (${SHERRY_META.publicRelease}) & Codebase Hardening (${SHERRY_META.devMilestone})`,
+    '',
+    'Tools:',
+    ...SHERRY_SECURITY_TOOLS.map(
+      (tool) => `  - ${tool.tool} (${tool.version}) [${pick(tool.badge)}]: ${pick(tool.headline)}`,
+    ),
+    '',
+    'Remediation Summary (Before -> After):',
+    ...SHERRY_AUDIT_COMPARISON.map(
+      (row) => `  * ${pick(row.category)}: ${pick(row.before)} -> ${pick(row.after)}`,
+    ),
+  ].join('\n');
+
   const uptimeSec = Math.max(1, Math.floor((Date.now() - bootTimeMs) / 1000));
 
   return {
@@ -167,6 +208,26 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
                 type: 'dir',
                 sectionId: 'publications',
                 children: pubFiles,
+              },
+              sherry: {
+                name: 'sherry',
+                type: 'dir',
+                sectionId: 'sherry',
+                children: {
+                  'overview.md': {
+                    name: 'overview.md',
+                    type: 'file',
+                    sectionId: 'sherry',
+                    url: SHERRY_META.repoUrl,
+                    content: sherryOverviewContent,
+                  },
+                  'security-audit.md': {
+                    name: 'security-audit.md',
+                    type: 'file',
+                    sectionId: 'sherry',
+                    content: sherrySecurityContent,
+                  },
+                },
               },
               projects: {
                 name: 'projects',
@@ -285,8 +346,8 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
                 content: [
                   '[    0.000000] Booting ChuOS MiniKernel v1.0.0-agent...',
                   '[    0.012401] VFS: Mounted /home/guest (portfoliofs, rw)',
-                  `[    0.024882] Loaded ${PUBLICATIONS.length} publications, ${PROJECTS.length} projects, ${CERTIFICATIONS.length} certifications`,
-                  '[    0.041920] Security: SELinux=enforcing, Nessus=0-critical, GCB=100%',
+                  `[    0.024882] Loaded ${PUBLICATIONS.length} publications, 1 flagship (Sherry) + ${PROJECTS.length} projects, ${CERTIFICATIONS.length} certifications`,
+                  '[    0.041920] Security: SELinux=enforcing, Nessus=0-crit, Trivy=0-CVE, Bandit=0-high, GCB=100%',
                   '[    0.058110] Agent Daemon (sherry-core): READY',
                   '[    0.064000] Welcome! Type "help" or "grep <keyword>" to explore.',
                 ].join('\n'),

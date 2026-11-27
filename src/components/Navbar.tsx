@@ -16,10 +16,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTerminal, onOpenStegoLab }
 
   return (
     <header className="sticky top-0 z-40 bg-paper/90 backdrop-blur-md border-b border-stone-200/80 dark:border-slate-800/80">
-      <div className="max-w-5xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
+      <div className="max-w-6xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
         <a
           href="#about"
-          className="flex items-center gap-2.5 group focus:outline-none"
+          className="flex items-center gap-2.5 group focus:outline-none shrink-0 whitespace-nowrap"
           aria-label="Back to top"
         >
           <span className="w-8 h-8 rounded-lg bg-academic-900 dark:bg-sky-500/20 dark:text-sky-300 dark:border dark:border-sky-400/30 text-paper font-serif text-sm font-semibold flex items-center justify-center tracking-wide group-hover:bg-academic-700 transition-colors">
@@ -31,18 +31,18 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTerminal, onOpenStegoLab }
         </a>
 
         {/* Desktop Nav */}
-        <nav className="hidden md:flex items-center gap-5" aria-label="Main navigation">
+        <nav className="hidden lg:flex items-center gap-6 xl:gap-7" aria-label="Main navigation">
           {NAV_ITEMS.map((item) => (
             <a
               key={item.id}
               href={`#${item.id}`}
-              className="text-sm text-slate-600 hover:text-academic-900 transition-colors font-medium"
+              className="text-sm text-slate-600 hover:text-academic-900 transition-colors font-medium whitespace-nowrap"
             >
               {t(item.label)}
             </a>
           ))}
 
-          <div className="flex items-center gap-2 pl-1">
+          <div className="flex items-center gap-2.5 pl-4 ml-1 border-l border-stone-200 dark:border-slate-800 shrink-0">
             <button
               type="button"
               onClick={onOpenTerminal}
@@ -80,7 +80,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTerminal, onOpenStegoLab }
         </nav>
 
         {/* Mobile Controls */}
-        <div className="flex md:hidden items-center gap-1.5">
+        <div className="flex lg:hidden items-center gap-1.5">
           <button
             type="button"
             onClick={onOpenStegoLab}
@@ -128,7 +128,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenTerminal, onOpenStegoLab }
       {/* Mobile Dropdown */}
       {mobileOpen && (
         <nav
-          className="md:hidden border-t border-stone-200 bg-white px-5 py-3 space-y-1"
+          className="lg:hidden border-t border-stone-200 bg-white px-5 py-3 space-y-1"
           aria-label="Mobile navigation"
         >
           {NAV_ITEMS.map((item) => (

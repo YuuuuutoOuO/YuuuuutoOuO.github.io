@@ -4,6 +4,7 @@ import { ThemeProvider } from './context/ThemeContext';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { Publications } from './components/Publications';
+import { SherryShowcase } from './components/SherryShowcase';
 import { Projects } from './components/Projects';
 import { Experience } from './components/Experience';
 import { Credentials } from './components/Credentials';
@@ -40,6 +41,7 @@ export const App: React.FC = () => {
           <main className="flex-1 max-w-5xl w-full mx-auto px-5 sm:px-8">
             <Hero />
             <Publications />
+            <SherryShowcase onOpenKvCacheLab={() => setKvCacheOpen(true)} />
             <Projects />
             <Experience />
             <Credentials />

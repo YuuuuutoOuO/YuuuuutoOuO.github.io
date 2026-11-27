@@ -10,7 +10,6 @@ export const Projects: React.FC = () => {
   const { lang, t } = useLanguage();
   const [filter, setFilter] = useState<ProjectFilter>('all');
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({
-    'sherry-ai-platform': true,
     'dlc-stego': true,
   });
   const [evidenceOpenIds, setEvidenceOpenIds] = useState<Record<string, boolean>>({});
@@ -18,7 +17,6 @@ export const Projects: React.FC = () => {
 
   const filters: { key: ProjectFilter; label: { zh: string; en: string } }[] = [
     { key: 'all', label: { zh: '全部專案', en: 'All Projects' } },
-    { key: 'ai-llm', label: { zh: 'AI Agent / LLM', en: 'AI Agent & LLM' } },
     { key: 'security-forensics', label: { zh: '資安與鑑識', en: 'Security & Forensics' } },
     { key: 'systems', label: { zh: '系統工程', en: 'Systems' } },
   ];
@@ -45,8 +43,8 @@ export const Projects: React.FC = () => {
           </h2>
           <p className="text-sm text-slate-600 mt-1">
             {lang === 'zh'
-              ? '涵蓋開源 AI Agent 平台、深度學習影像鑑識、資安院雲端組態計畫與去識別化產學合作系統。'
-              : 'Open-source AI Agent platform, deep learning digital forensics, NICS cloud compliance, and de-identified industry-academia systems.'}
+              ? '涵蓋深度學習影像鑑識、資安院雲端與 Linux 合規計畫、校內 ISMS 稽核及去識別化產學合作系統。'
+              : 'Deep learning digital forensics, NICS cloud & Linux compliance baselines, campus ISMS auditing, and de-identified industry-academia systems.'}
           </p>
         </div>
 

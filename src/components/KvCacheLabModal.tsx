@@ -386,8 +386,8 @@ export const KvCacheLabModal: React.FC<KvCacheLabModalProps> = ({ open, onClose 
                     ? '❄️ Turn #1 為冷啟動（Cold Start），所有前綴尚待寫入 VRAM KV Cache；點擊「模擬下一輪請求 (Turn +1)」即可看到 Zone 1 / Zone 2 前綴命中的延遲驟降效果！'
                     : '❄️ Turn #1 is a Cold Start warming up the KV Cache. Click "Simulate Next Turn" to see Zone 1 prefix hits slash TTFT!'
                   : isZh
-                    ? '⚡ 透過將靜態系統人設與 Compact Tool Index 鎖定在 Zone 1，vLLM / RadixAttention 可在 Pass-2 直接跳過數千個 Token 的 Prefill，將 TTFT 壓至 200ms 內。'
-                    : '⚡ By pinning static persona & compact tool index in Zone 1, vLLM / RadixAttention skips thousands of prefill tokens on Pass-2, keeping TTFT under 200ms.'}
+                    ? '⚡ 透過將靜態系統人設與 Compact Tool Index 鎖定在 Zone 1，vLLM / RadixAttention 可在 Pass-2 直接跳過大量重複的 Prefill 計算，顯著降低回應延遲。'
+                    : '⚡ By pinning static persona & compact tool index in Zone 1, vLLM / RadixAttention skips redundant prefill computation on Pass-2, noticeably lowering latency.'}
               </p>
             </div>
           </div>

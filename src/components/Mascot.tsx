@@ -367,7 +367,7 @@ export const Mascot: React.FC = () => {
     setWheelAngle((prev) => prev + 180);
     setMode('trivia');
     setMessageIdx(0);
-    document.getElementById('projects')?.scrollIntoView({ behavior: 'smooth' });
+    document.getElementById('sherry')?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const currentMessage =

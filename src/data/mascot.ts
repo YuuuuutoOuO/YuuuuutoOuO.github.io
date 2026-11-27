@@ -13,8 +13,8 @@ export const MASCOT_META = {
 
 export const MASCOT_TRIVIA: LocalizedText[] = [
   {
-    zh: '小知識：Sherry 透過 Zone 1 / Zone 2 前綴對齊，讓 Pass-2 直接命中 5,500+ tokens 的 KV Cache，首字延遲降到 200ms 內！',
-    en: 'Fun fact: Sherry aligns Zone 1 / Zone 2 prefixes so Pass-2 hits 5,500+ cached tokens, keeping TTFT under 200ms!',
+    zh: '小知識：Sherry 透過 Zone 1 / Zone 2 前綴對齊設計，讓 Pass-2 直接重用靜態前綴的 KV Cache，大幅減少重複 Prefill！',
+    en: 'Fun fact: Sherry aligns Zone 1 / Zone 2 prefixes so Pass-2 reuses static prefix KV Cache and avoids redundant prefill!',
   },
   {
     zh: '小知識：DLC-Stego 結合空間域 SRM 殘差與頻率域 Haar 小波，能從僅佔 0.6% 面積的局部區域揪出 2-bit LSB 隱寫酬載！',
@@ -29,8 +29,8 @@ export const MASCOT_TRIVIA: LocalizedText[] = [
     en: 'Fun fact: All 66 Linux GCB Bash scripts passed bidirectional Positive & Negative testing with zero false positives and zero false negatives!',
   },
   {
-    zh: '資安亮點：Sherry 的 Quart Web 控制台經過 Tenable Nessus 弱點掃描驗證，達成 0 嚴重、0 高風險與 0 應用程式層 Web 弱點！',
-    en: 'Security highlight: Sherry’s Quart Web UI passed Tenable Nessus scanning with 0 Critical, 0 High, and 0 application-layer web vulnerabilities!',
+    zh: '資安亮點：Sherry 通過三層資安健檢驗證 — Nessus（0 嚴重/高風險）、Trivy（109 CVE 清零、0 機敏外洩）與 Bandit（High 3→0、實質風險全清零）！',
+    en: 'Security highlight: Sherry passed 3-layer security audits — Nessus (0 Crit/High), Trivy (109→0 CVEs, 0 secrets), and Bandit (High 3→0, all real risks cleared)!',
   },
   {
     zh: '冷知識：為什麼是騎腳踏車的鵜鶘？因為 Simon Willison 用「畫一隻騎腳踏車的鵜鶘 SVG」當作各大 LLM 空間推理與繪圖能力的經典基準測試！',

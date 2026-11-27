@@ -61,6 +61,7 @@ export const SITE_PROFILE = {
 export const NAV_ITEMS: { id: string; label: LocalizedText }[] = [
   { id: 'about', label: { zh: '關於', en: 'About' } },
   { id: 'publications', label: { zh: '論文發表', en: 'Publications' } },
+  { id: 'sherry', label: { zh: 'Sherry 專案', en: 'Sherry' } },
   { id: 'projects', label: { zh: '研究與專案', en: 'Projects' } },
   { id: 'experience', label: { zh: '學經歷與計畫', en: 'Experience' } },
   { id: 'credentials', label: { zh: '榮譽與證照', en: 'Credentials' } },
