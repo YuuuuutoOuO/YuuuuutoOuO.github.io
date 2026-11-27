@@ -22,6 +22,83 @@ export interface VfsNode {
   sectionId?: string;
   url?: string;
   readonly?: boolean;
+  mode?: number;
+  owner?: string;
+  group?: string;
+  mtime?: string;
+  inode?: number;
+}
+
+const DEFAULT_MTIME = 'Nov 27 14:18';
+
+export function getNodeMode(node: VfsNode): number {
+  if (typeof node.mode === 'number') return node.mode;
+  if (node.type === 'dir') return 0o755;
+  return node.readonly ? 0o444 : 0o644;
+}
+
+export function formatOctalMode(node: VfsNode): string {
+  return getNodeMode(node).toString(8).padStart(4, '0');
+}
+
+export function formatPermissions(node: VfsNode): string {
+  const mode = getNodeMode(node);
+  const typeChar = node.type === 'dir' ? 'd' : '-';
+  const triad = (shift: number) => {
+    const bits = (mode >> shift) & 0b111;
+    return `${bits & 4 ? 'r' : '-'}${bits & 2 ? 'w' : '-'}${bits & 1 ? 'x' : '-'}`;
+  };
+  return `${typeChar}${triad(6)}${triad(3)}${triad(0)}`;
+}
+
+export function getNodeByteSize(node: VfsNode): number {
+  if (node.type === 'dir') return 4096;
+  const text = node.content ?? '';
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length;
+  }
+  return text.length;
+}
+
+export function formatHumanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  return `${(bytes / 1024).toFixed(1)}K`;
+}
+
+export function getNodeLinkCount(node: VfsNode): number {
+  if (node.type !== 'dir' || !node.children) return 1;
+  const subdirs = Object.values(node.children).filter((c) => c.type === 'dir').length;
+  return 2 + subdirs;
+}
+
+function hydrateVfsMetadata(
+  node: VfsNode,
+  inSystemTree: boolean,
+  counter: { nextInode: number },
+  parentOwner = 'root',
+  parentGroup = 'root',
+): void {
+  node.inode = counter.nextInode++;
+  if (!node.mtime) node.mtime = DEFAULT_MTIME;
+  if (typeof node.mode !== 'number') {
+    node.mode = node.type === 'dir' ? 0o755 : node.readonly ? 0o444 : 0o644;
+  }
+  if (!node.owner) node.owner = inSystemTree ? parentOwner : 'guest';
+  if (!node.group) node.group = inSystemTree ? parentGroup : 'guest';
+
+  if (node.type === 'dir' && node.children) {
+    for (const child of Object.values(node.children)) {
+      const childIsSystem =
+        inSystemTree && child.name !== 'guest' && !(node.name === 'home' && child.name === 'guest');
+      hydrateVfsMetadata(
+        child,
+        node.name === 'home' && child.name === 'guest' ? false : childIsSystem,
+        counter,
+        node.owner,
+        node.group,
+      );
+    }
+  }
 }
 
 export interface SearchHit {
@@ -185,18 +262,45 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
 
   const uptimeSec = Math.max(1, Math.floor((Date.now() - bootTimeMs) / 1000));
 
-  return {
+  const root: VfsNode = {
     name: '/',
     type: 'dir',
+    mode: 0o755,
+    owner: 'root',
+    group: 'root',
     children: {
       home: {
         name: 'home',
         type: 'dir',
+        mode: 0o755,
+        owner: 'root',
+        group: 'root',
         children: {
           guest: {
             name: 'guest',
             type: 'dir',
+            mode: 0o750,
+            owner: 'guest',
+            group: 'guest',
             children: {
+              '.bashrc': {
+                name: '.bashrc',
+                type: 'file',
+                mode: 0o644,
+                content: [
+                  '# ~/.bashrc: executed by chu-sh for interactive shells.',
+                  'export PS1="guest@chuos:\\w$ "',
+                  'export LANG="zh_TW.UTF-8"',
+                  'alias ll="ls -la"',
+                  'alias la="ls -a"',
+                ].join('\n'),
+              },
+              '.profile': {
+                name: '.profile',
+                type: 'file',
+                mode: 0o644,
+                content: '# ~/.profile: ChuOS guest session environment\nPATH="/usr/local/bin:/usr/bin:/bin"\n',
+              },
               'about.md': {
                 name: 'about.md',
                 type: 'file',
@@ -296,6 +400,7 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
           'os-release': {
             name: 'os-release',
             type: 'file',
+            mode: 0o644,
             readonly: true,
             content: [
               'NAME="ChuOS MiniKernel"',
@@ -308,6 +413,7 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
           hostname: {
             name: 'hostname',
             type: 'file',
+            mode: 0o644,
             readonly: true,
             content: 'chuos.local',
           },
@@ -316,16 +422,19 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
       proc: {
         name: 'proc',
         type: 'dir',
+        mode: 0o555,
         children: {
           uptime: {
             name: 'uptime',
             type: 'file',
+            mode: 0o444,
             readonly: true,
             content: `${uptimeSec}.00 ${Math.floor(uptimeSec * 0.92)}.42`,
           },
           version: {
             name: 'version',
             type: 'file',
+            mode: 0o444,
             readonly: true,
             content: 'ChuOS version 1.0.0-agent (vite@6 + react@18) #1 SMP PREEMPT_DYNAMIC',
           },
@@ -338,18 +447,24 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
           log: {
             name: 'log',
             type: 'dir',
+            mode: 0o755,
+            owner: 'root',
+            group: 'adm',
             children: {
               'boot.log': {
                 name: 'boot.log',
                 type: 'file',
+                mode: 0o640,
+                owner: 'root',
+                group: 'adm',
                 readonly: true,
                 content: [
                   '[    0.000000] Booting ChuOS MiniKernel v1.0.0-agent...',
-                  '[    0.012401] VFS: Mounted /home/guest (portfoliofs, rw)',
+                  '[    0.012401] VFS: Mounted /home/guest (portfoliofs, ro, nosuid, nodev)',
                   `[    0.024882] Loaded ${PUBLICATIONS.length} publications, 1 flagship (Sherry) + ${PROJECTS.length} projects, ${CERTIFICATIONS.length} certifications`,
                   '[    0.041920] Security: SELinux=enforcing, Nessus=0-crit, Trivy=0-CVE, Bandit=0-high, GCB=100%',
                   '[    0.058110] Agent Daemon (sherry-core): READY',
-                  '[    0.064000] Welcome! Type "help" or "grep <keyword>" to explore.',
+                  '[    0.064000] Welcome! Type "help", "ls -la", or "stat about.md" to explore.',
                 ].join('\n'),
               },
             },
@@ -358,6 +473,9 @@ export function buildVfs(lang: Language, bootTimeMs: number): VfsNode {
       },
     },
   };
+
+  hydrateVfsMetadata(root, true, { nextInode: 1001 });
+  return root;
 }
 
 export function normalizePath(cwd: string, target: string): string {

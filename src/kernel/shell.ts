@@ -6,7 +6,12 @@ import type { ThemeMode } from '../context/ThemeContext';
 import {
   buildTreeLines,
   formatDisplayPath,
+  formatHumanSize,
+  formatOctalMode,
+  formatPermissions,
   getHomeDir,
+  getNodeByteSize,
+  getNodeLinkCount,
   normalizePath,
   resolveNode,
   searchVfs,
@@ -52,9 +57,14 @@ const VALID_SECTIONS = ['about', 'publications', 'sherry', 'projects', 'experien
 export const AVAILABLE_COMMANDS = [
   'help',
   'ls',
+  'll',
   'cd',
   'pwd',
   'cat',
+  'stat',
+  'file',
+  'wc',
+  'chmod',
   'tree',
   'grep',
   'search',
@@ -67,6 +77,7 @@ export const AVAILABLE_COMMANDS = [
   'neofetch',
   'uname',
   'whoami',
+  'id',
   'ps',
   'uptime',
   'dmesg',
@@ -115,12 +126,13 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
       return {
         lines: [
           makeLine('ChuOS MiniKernel Shell — Available Commands', 'accent'),
-          makeLine('  Navigation : ls [dir], cd <dir>, pwd, cat <file>, tree [dir]'),
-          makeLine('  Search     : grep <keyword>, search <keyword>, goto <section>'),
+          makeLine('  Files      : ls [-la|-lh], ll, cd <dir>, pwd, cat <file>, tree [dir]'),
+          makeLine('  Inspect    : stat <path>, file <path>, wc <file>, chmod <mode> <file>'),
+          makeLine('  Search     : grep <keyword>, search <keyword>, goto <section|file>'),
           makeLine('  Controls   : theme [light|dark|toggle], lang [toggle], stego'),
-          makeLine('  System     : neofetch, uname -a, ps, uptime, dmesg, whoami, clear'),
+          makeLine('  System     : neofetch, uname -a, id, whoami, ps, uptime, dmesg, clear'),
           makeLine('  Easter Egg : sudo hire-me, rm -rf /', 'warning'),
-          makeLine('Tip: Press Tab to autocomplete, ↑/↓ for history, Esc to close.', 'muted'),
+          makeLine('Tip: Press Tab to autocomplete, ↑/↓ for history, drag edges to resize.', 'muted'),
         ],
       };
 
@@ -129,6 +141,9 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
 
     case 'whoami':
       return { lines: [makeLine('guest@chuos.local (read-only visitor)')] };
+
+    case 'id':
+      return { lines: [makeLine('uid=1000(guest) gid=1000(guest) groups=1000(guest),27(visitors)')] };
 
     case 'date':
       return { lines: [makeLine(new Date().toLocaleString())] };
@@ -156,32 +171,203 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
     case 'echo':
       return { lines: [makeLine(args.join(' '))] };
 
+    case 'll':
     case 'ls': {
-      const target = args[0] ? normalizePath(ctx.cwd, args[0]) : ctx.cwd;
+      let showLong = cmd === 'll';
+      let showAll = cmd === 'll';
+      let humanReadable = false;
+      let pathArg: string | undefined;
+
+      for (const arg of args) {
+        if (arg.startsWith('-') && arg.length > 1) {
+          for (const ch of arg.slice(1)) {
+            if (ch === 'l') showLong = true;
+            else if (ch === 'a') showAll = true;
+            else if (ch === 'h') humanReadable = true;
+          }
+        } else if (!pathArg) {
+          pathArg = arg;
+        }
+      }
+
+      const target = pathArg ? normalizePath(ctx.cwd, pathArg) : ctx.cwd;
       const node = resolveNode(ctx.root, target);
       if (!node) {
-        return { lines: [makeLine(`ls: cannot access '${args[0]}': No such file or directory`, 'error')] };
+        return { lines: [makeLine(`ls: cannot access '${pathArg}': No such file or directory`, 'error')] };
       }
+
+      const formatLongLine = (entry: VfsNode, displayName: string): string => {
+        const perm = formatPermissions(entry);
+        const links = String(getNodeLinkCount(entry)).padStart(2, ' ');
+        const owner = (entry.owner ?? 'guest').padEnd(5, ' ');
+        const group = (entry.group ?? 'guest').padEnd(5, ' ');
+        const bytes = getNodeByteSize(entry);
+        const sizeStr = (humanReadable ? formatHumanSize(bytes) : String(bytes)).padStart(5, ' ');
+        const mtime = entry.mtime ?? 'Nov 27 14:18';
+        const suffix = entry.type === 'dir' && displayName !== '.' && displayName !== '..' ? '/' : '';
+        return `${perm} ${links} ${owner} ${group} ${sizeStr} ${mtime} ${displayName}${suffix}`;
+      };
+
       if (node.type === 'file') {
-        return { lines: [makeLine(node.name)] };
+        return {
+          lines: [
+            makeLine(showLong ? formatLongLine(node, node.name) : node.name, 'normal', {
+              label: 'cat',
+              command: `cat ${target}`,
+            }),
+          ],
+        };
       }
-      const entries = Object.values(node.children ?? {}).sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-      if (entries.length === 0) {
+
+      const allEntries = Object.values(node.children ?? {})
+        .filter((entry) => showAll || !entry.name.startsWith('.'))
+        .sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+
+      const outLines: TerminalLine[] = [];
+
+      if (showLong) {
+        const totalBlocks = allEntries.reduce(
+          (sum, entry) => sum + Math.max(1, Math.ceil(getNodeByteSize(entry) / 1024)),
+          showAll ? 8 : 0,
+        );
+        outLines.push(makeLine(`total ${totalBlocks}`, 'muted'));
+        if (showAll) {
+          outLines.push(makeLine(formatLongLine(node, '.'), 'accent'));
+          const parentPath = normalizePath(target, '..');
+          const parentNode = resolveNode(ctx.root, parentPath) ?? node;
+          outLines.push(
+            makeLine(formatLongLine(parentNode, '..'), 'accent', {
+              label: 'cd ..',
+              command: 'cd ..',
+            }),
+          );
+        }
+      } else if (showAll) {
+        outLines.push(makeLine('./', 'accent'));
+        outLines.push(makeLine('../', 'accent', { label: 'cd ..', command: 'cd ..' }));
+      }
+
+      if (allEntries.length === 0 && !showAll) {
         return { lines: [makeLine('(empty directory)', 'muted')] };
       }
-      return {
-        lines: entries.map((entry) =>
+
+      for (const entry of allEntries) {
+        const fullPath = `${target === '/' ? '' : target}/${entry.name}`.replace('//', '/');
+        outLines.push(
           makeLine(
-            entry.type === 'dir' ? `${entry.name}/` : entry.name,
+            showLong ? formatLongLine(entry, entry.name) : entry.type === 'dir' ? `${entry.name}/` : entry.name,
             entry.type === 'dir' ? 'accent' : 'normal',
             entry.type === 'file'
-              ? { label: 'cat', command: `cat ${target === '/' ? '' : target}/${entry.name}`.replace('//', '/') }
-              : { label: 'cd', command: `cd ${target === '/' ? '' : target}/${entry.name}`.replace('//', '/') },
+              ? { label: 'cat', command: `cat ${fullPath}` }
+              : { label: 'cd', command: `cd ${fullPath}` },
           ),
-        ),
+        );
+      }
+
+      return { lines: outLines };
+    }
+
+    case 'stat': {
+      if (!args[0]) {
+        return { lines: [makeLine('usage: stat <file|dir>', 'warning')] };
+      }
+      const target = normalizePath(ctx.cwd, args[0]);
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`stat: cannot stat '${args[0]}': No such file or directory`, 'error')] };
+      }
+      const bytes = getNodeByteSize(node);
+      const blocks = Math.max(0, Math.ceil(bytes / 512));
+      const fileType = node.type === 'dir' ? 'directory' : 'regular file';
+      const owner = node.owner ?? 'guest';
+      const group = node.group ?? 'guest';
+      const uid = owner === 'root' ? '   0' : '1000';
+      const gid = group === 'root' ? '   0' : group === 'adm' ? '   4' : '1000';
+      const mtime = node.mtime ?? 'Nov 27 14:18';
+
+      return {
+        lines: [
+          makeLine(`  File: ${formatDisplayPath(target)}`, 'accent'),
+          makeLine(
+            `  Size: ${String(bytes).padEnd(10, ' ')} Blocks: ${String(blocks).padEnd(8, ' ')} IO Block: 4096   ${fileType}`,
+          ),
+          makeLine(`Device: 0,42   Inode: ${String(node.inode ?? 1001).padEnd(10, ' ')} Links: ${getNodeLinkCount(node)}`),
+          makeLine(
+            `Access: (${formatOctalMode(node)}/${formatPermissions(node)})  Uid: (${uid}/${owner.padStart(5, ' ')})   Gid: (${gid}/${group.padStart(5, ' ')})`,
+            'success',
+          ),
+          makeLine(`Modify: 2026-${mtime} +0800`, 'muted'),
+          makeLine(`  Note: portfoliofs mounted read-only (SELinux enforcing)`, 'muted'),
+        ],
+      };
+    }
+
+    case 'file': {
+      if (!args[0]) {
+        return { lines: [makeLine('usage: file <path>', 'warning')] };
+      }
+      const target = normalizePath(ctx.cwd, args[0]);
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`${args[0]}: cannot open (No such file or directory)`, 'error')] };
+      }
+      if (node.type === 'dir') {
+        return { lines: [makeLine(`${args[0]}: directory (mode ${formatOctalMode(node)})`, 'accent')] };
+      }
+      const kind = node.name.endsWith('.md')
+        ? 'UTF-8 Unicode Markdown text'
+        : target.startsWith('/proc/')
+          ? 'ASCII text (virtual procfs)'
+          : target.startsWith('/var/log/')
+            ? 'ASCII kernel ring buffer log'
+            : 'UTF-8 Unicode text';
+      return { lines: [makeLine(`${args[0]}: ${kind}, ${getNodeByteSize(node)} bytes (${formatOctalMode(node)})`)] };
+    }
+
+    case 'wc': {
+      if (!args[0]) {
+        return { lines: [makeLine('usage: wc <file>', 'warning')] };
+      }
+      const target = normalizePath(ctx.cwd, args[0]);
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`wc: ${args[0]}: No such file or directory`, 'error')] };
+      }
+      if (node.type === 'dir') {
+        return { lines: [makeLine(`wc: ${args[0]}: Is a directory`, 'error')] };
+      }
+      const text = node.content ?? '';
+      const lineCount = text ? text.split('\n').length : 0;
+      const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+      const byteCount = getNodeByteSize(node);
+      return {
+        lines: [
+          makeLine(
+            `${String(lineCount).padStart(4, ' ')} ${String(wordCount).padStart(5, ' ')} ${String(byteCount).padStart(6, ' ')} ${args[0]}`,
+          ),
+        ],
+      };
+    }
+
+    case 'chmod': {
+      if (args.length < 2) {
+        return { lines: [makeLine('usage: chmod <octal-mode> <file>  (e.g. chmod 644 about.md)', 'warning')] };
+      }
+      const target = normalizePath(ctx.cwd, args[1]);
+      const node = resolveNode(ctx.root, target);
+      if (!node) {
+        return { lines: [makeLine(`chmod: cannot access '${args[1]}': No such file or directory`, 'error')] };
+      }
+      return {
+        lines: [
+          makeLine(
+            `chmod: changing permissions of '${args[1]}' (${formatOctalMode(node)} -> ${args[0]}): Read-only file system (EPERM)`,
+            'error',
+          ),
+        ],
       };
     }
 
@@ -262,16 +448,32 @@ export function executeCommand(rawInput: string, ctx: ShellContext): ShellResult
 
     case 'goto':
     case 'open': {
-      const section = (args[0] ?? '').replace(/^#/, '').toLowerCase();
-      if (!VALID_SECTIONS.includes(section as (typeof VALID_SECTIONS)[number])) {
-        return {
-          lines: [
-            makeLine(`Available sections: ${VALID_SECTIONS.join(', ')}`, 'warning'),
-          ],
-        };
+      const rawTarget = args[0] ?? '';
+      const section = rawTarget.replace(/^#/, '').toLowerCase();
+      if (VALID_SECTIONS.includes(section as (typeof VALID_SECTIONS)[number])) {
+        ctx.scrollToSection(section);
+        return { lines: [makeLine(`Scrolled to #${section}.`, 'success')] };
       }
-      ctx.scrollToSection(section);
-      return { lines: [makeLine(`Scrolled to #${section}.`, 'success')] };
+      if (rawTarget) {
+        const resolved = resolveNode(ctx.root, normalizePath(ctx.cwd, rawTarget));
+        if (resolved?.sectionId) {
+          ctx.scrollToSection(resolved.sectionId);
+          return {
+            lines: [
+              makeLine(
+                `Scrolled to #${resolved.sectionId} (via ${resolved.name}).`,
+                'success',
+                resolved.type === 'file' ? { label: 'cat', command: `cat ${rawTarget}` } : undefined,
+              ),
+            ],
+          };
+        }
+      }
+      return {
+        lines: [
+          makeLine(`Available sections: ${VALID_SECTIONS.join(', ')} (or pass any VFS file)`, 'warning'),
+        ],
+      };
     }
 
     case 'theme': {
